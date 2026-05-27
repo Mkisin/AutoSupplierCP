@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Демо: Авто КП для поставщика</title>
+    <style>
+      :root {
+        --bg: #f4f7f8;
+        --ink: #172026;
+        --muted: #66737c;
+        --line: #d9e2e5;
+        --panel: #fff;
+        --accent: #0f7b74;
+        --accent-dark: #075c56;
+        --accent-soft: #dff3f0;
+        --danger: #b42318;
+        font-family: Inter, "Segoe UI", Arial, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: linear-gradient(180deg, rgba(15,123,116,.12), rgba(244,247,248,0) 420px), var(--bg);
+        color: var(--ink);
+      }
+      button, input, select, textarea { font: inherit; }
+      .page-shell { width: min(1180px, calc(100% - 36px)); margin: 0 auto; padding: 32px 0 48px; }
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 280px;
+        gap: 24px;
+        align-items: end;
+        padding: 22px 0 28px;
+      }
+      .eyebrow { margin: 0 0 10px; color: var(--accent-dark); font-size: 13px; font-weight: 800; text-transform: uppercase; }
+      h1, h2, p { margin-top: 0; }
+      h1 { margin-bottom: 14px; max-width: 840px; font-size: clamp(34px, 5vw, 58px); line-height: 1.02; }
+      .lead { max-width: 780px; margin-bottom: 0; color: var(--muted); font-size: 18px; line-height: 1.55; }
+      .hero-panel {
+        min-height: 150px;
+        padding: 24px;
+        border: 1px solid rgba(15,123,116,.18);
+        border-radius: 8px;
+        background: rgba(255,255,255,.72);
+        box-shadow: 0 18px 60px rgba(28,43,48,.12);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      .metric { display: block; color: var(--accent-dark); font-size: 52px; font-weight: 800; line-height: 1; }
+      .hero-panel span:last-child { color: var(--muted); line-height: 1.35; }
+      .form-grid { display: grid; gap: 18px; }
+      .section-band {
+        padding: 26px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: 0 10px 34px rgba(26,43,48,.08);
+      }
+      .section-head-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(420px, 560px);
+        gap: 24px;
+        align-items: start;
+        margin-bottom: 22px;
+      }
+      .section-title { display: flex; gap: 14px; align-items: flex-start; }
+      .section-title > span {
+        width: 34px; height: 34px; flex: 0 0 34px; border-radius: 50%;
+        background: var(--accent-soft); color: var(--accent-dark);
+        display: grid; place-items: center; font-weight: 800;
+      }
+      .section-title h2 { margin-bottom: 4px; font-size: 22px; }
+      .section-title p { margin-bottom: 0; color: var(--muted); }
+      .existing-company {
+        display: grid;
+        gap: 14px;
+        padding: 16px;
+        border: 1px solid rgba(15,123,116,.18);
+        border-radius: 8px;
+        background: linear-gradient(135deg, rgba(223,243,240,.76), rgba(255,255,255,.92));
+      }
+      .existing-company span { display: block; margin-bottom: 4px; color: var(--accent-dark); font-weight: 850; }
+      .existing-company p { margin-bottom: 0; color: var(--muted); line-height: 1.4; }
+      .existing-company-controls { display: grid; grid-template-columns: minmax(0, 1fr) 148px; gap: 10px; }
+      .field-row { display: grid; gap: 16px; margin-bottom: 16px; }
+      .field-row.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .field-row.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      label { display: grid; gap: 8px; color: #2d3a40; font-size: 14px; font-weight: 700; }
+      input, select, textarea {
+        width: 100%;
+        border: 1px solid #cbd8dc;
+        border-radius: 8px;
+        background: #fbfdfd;
+        color: var(--ink);
+        padding: 12px 13px;
+        outline: none;
+      }
+      input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(15,123,116,.12); background: #fff; }
+      textarea { resize: vertical; min-height: 112px; }
+      button {
+        border: 0;
+        border-radius: 8px;
+        cursor: pointer;
+        font-weight: 800;
+        transition: transform .12s ease, background .18s ease;
+      }
+      button:hover { transform: translateY(-1px); }
+      .existing-company-controls button { background: #fff; border: 1px solid #cbd8dc; color: var(--accent-dark); }
+      .chip-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+      .chip { position: relative; min-height: 48px; }
+      .chip input { position: absolute; inset: 0; opacity: 0; }
+      .chip span {
+        min-height: 48px;
+        border: 1px solid #cbd8dc;
+        border-radius: 8px;
+        background: #fbfdfd;
+        display: flex;
+        align-items: center;
+        padding: 10px 12px;
+        color: #2d3a40;
+        font-weight: 750;
+      }
+      .chip input:checked + span { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-dark); box-shadow: inset 0 0 0 1px var(--accent); }
+      .actions {
+        position: sticky;
+        bottom: 0;
+        display: grid;
+        grid-template-columns: auto minmax(0,1fr) auto;
+        gap: 18px;
+        align-items: center;
+        padding: 16px 0 0;
+        background: linear-gradient(180deg, rgba(244,247,248,0), var(--bg) 28%);
+      }
+      .primary, .secondary { min-width: 244px; min-height: 52px; padding: 0 22px; }
+      .primary { background: var(--accent); color: #fff; box-shadow: 0 14px 30px rgba(15,123,116,.25); }
+      .secondary { border: 1px solid rgba(15,123,116,.28); background: #fff; color: var(--accent-dark); }
+      .secondary:hover { background: var(--accent-soft); }
+      .status { min-height: 22px; margin: 0; color: var(--accent-dark); font-weight: 700; }
+      .status.error { color: var(--danger); }
+      .demo-note {
+        margin: 0 0 18px;
+        padding: 12px 14px;
+        border-radius: 8px;
+        background: #fff7e6;
+        border: 1px solid #f2d28f;
+        color: #795500;
+        font-weight: 700;
+      }
+      @media (max-width: 860px) {
+        .hero, .section-head-row, .field-row.two, .field-row.three, .chip-grid, .existing-company-controls, .actions {
+          grid-template-columns: 1fr;
+        }
+        .page-shell { width: min(100% - 24px, 1180px); padding-top: 18px; }
+        .section-band { padding: 20px; }
+        .primary, .secondary { width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Авто КП для поставщика</p>
+          <h1>Демо интерфейса подготовки КП</h1>
+          <p class="lead">Автономная HTML-версия для показа сценария без сервера, Python и Excel. Данные сохраняются только в памяти страницы.</p>
+        </div>
+        <div class="hero-panel">
+          <span class="metric" id="savedCount">5</span>
+          <span>демо-карточек в списке</span>
+        </div>
+      </section>
+
+      <p class="demo-note">Демо-режим: файл Excel не редактируется, презентация не создается. Страница показывает будущий сценарий автономного агента.</p>
+
+      <form id="proposalForm" class="form-grid">
+        <section class="section-band">
+          <div class="section-head-row">
+            <div class="section-title">
+              <span>1</span>
+              <div>
+                <h2>Компания</h2>
+                <p>Основные реквизиты и контакт для персонализации КП.</p>
+              </div>
+            </div>
+            <div class="existing-company">
+              <div>
+                <span>Выбрать из существующих компаний</span>
+                <p>Подставьте демо-карточку, измените поля и сохраните обратно в память страницы.</p>
+              </div>
+              <div class="existing-company-controls">
+                <select id="existingCompanySelect"></select>
+                <button type="button" id="selectExistingCompany">Выбрать</button>
+              </div>
+            </div>
+          </div>
+
+          <input id="rowNumber" name="_rowNumber" type="hidden" />
+
+          <div class="field-row two">
+            <label><span>Название компании *</span><input id="companyName" name="companyName" required /></label>
+            <label><span>ИНН</span><input id="inn" name="inn" inputmode="numeric" /></label>
+          </div>
+
+          <div class="field-row three">
+            <label><span>Тип компании *</span><select id="companyTypeSelect" name="companyType" required></select></label>
+            <label><span>ФИО контакта *</span><input name="contactName" required /></label>
+            <label><span>Должность контакта *</span><input name="contactPosition" required /></label>
+          </div>
+
+          <div class="field-row three">
+            <label><span>Отрасль *</span><input name="industry" value="Food" required /></label>
+            <label><span>Сфера деятельности *</span><input name="activity" value="Продукты питания\\напитки (фуд)" required /></label>
+            <label><span>Категория по работе с сетями *</span><select name="networkCategories" id="networkWorkCategory" required></select></label>
+          </div>
+
+          <div class="field-row three">
+            <label><span>Сайт *</span><input name="website" required /></label>
+            <label><span>Страна *</span><input name="country" value="Россия" required /></label>
+            <label><span>Город *</span><input name="city" required /></label>
+          </div>
+        </section>
+
+        <section class="section-band">
+          <div class="section-title">
+            <span>2</span>
+            <div>
+              <h2>Продукт и рынок</h2>
+              <p>Категория, ценовой сегмент и описание товара для подбора аргументов в КП.</p>
+            </div>
+          </div>
+          <div class="field-row three">
+            <label><span>Название товара *</span><input name="productName" required /></label>
+            <label><span>Категория товара *</span><input name="productCategory" required /></label>
+            <label><span>Ценовая категория *</span><select name="priceCategory" id="priceCategory" required></select></label>
+          </div>
+          <label><span>Краткое описание продукции</span><textarea name="productDescription" rows="4"></textarea></label>
+        </section>
+
+        <section class="section-band">
+          <div class="section-title">
+            <span>3</span>
+            <div>
+              <h2>Работа с сетями</h2>
+              <p>Выберите предпочтительные категории сетей для подготовки КП.</p>
+            </div>
+          </div>
+          <label>
+            <span>Предпочтительные категории сетей</span>
+            <div id="preferredNetworkCategories" class="chip-grid"></div>
+          </label>
+        </section>
+
+        <div class="actions">
+          <button type="button" class="secondary" id="buildPresentationBtn">Сформировать презентацию</button>
+          <p id="saveStatus" class="status"></p>
+          <button type="submit" class="primary">Запомнить параметры</button>
+        </div>
+      </form>
+    </main>
+
+    <script>
+      const companies = [
+        { companyName: 'ООО "БиоФудЛаб"', inn: '7708753075', companyType: 'Производитель конечного товара', contactName: 'Шифрина Елена Владимировна', contactPosition: 'Генеральный директор', industry: 'Food', activity: 'Продукты питания\\напитки (фуд)', networkCategories: 'растущий', website: 'https://bite.ru/', country: 'Россия', city: 'Москва', productName: 'Полезные снеки Bite', productCategory: 'Полезные снеки', priceCategory: 'Средний+', productDescription: 'Фруктово-ореховые батончики, снеки и продукты здорового питания.', preferredNetworks: 'Федеральные сети, Маркетплейсы, Специализированные сети' },
+        { companyName: 'ООО "Ресурс"', inn: '7440007056', companyType: 'Производитель конечного товара', contactName: 'Зяблин Виталий Владимирович', contactPosition: 'Директор', industry: 'Food', activity: 'Продукты питания\\напитки (фуд)', networkCategories: 'опытный', website: 'https://www.uvelka.ru/', country: 'Россия', city: 'Увельский', productName: 'Крупы Увелка', productCategory: 'Крупы', priceCategory: 'Средний', productDescription: 'Крупы, хлопья и зерновые продукты легкого приготовления.', preferredNetworks: 'Федеральные сети, Региональные сети, Маркетплейсы' },
+        { companyName: 'АО "Русская Рыбная Компания"', inn: '7701174512', companyType: 'Дистрибьютор', contactName: 'Дангауэр Дмитрий Сергеевич', contactPosition: 'Генеральный директор', industry: 'Food', activity: 'Продукты питания\\напитки (фуд)', networkCategories: 'опытный', website: 'https://rusfishcom.ru/', country: 'Россия', city: 'Москва', productName: 'Рыба и морепродукты РРК', productCategory: 'Рыба и морепродукты', priceCategory: 'Средний+', productDescription: 'Охлажденная и свежемороженая рыба, морепродукты и переработка.', preferredNetworks: 'Федеральные сети, Региональные сети, HoReCa' },
+        { companyName: 'ООО "ГРИНВАЙЗ"', inn: '4011031618', companyType: 'Производитель конечного товара', contactName: 'Коммерческий отдел', contactPosition: 'Представитель компании', industry: 'Food', activity: 'Продукты питания\\напитки (фуд)', networkCategories: 'растущий', website: 'https://greenwise.ru/', country: 'Россия', city: 'Малоярославец', productName: 'Растительные альтернативы Greenwise', productCategory: 'Растительное мясо', priceCategory: 'Средний+', productDescription: 'Растительные альтернативы мясным, рыбным и молочным продуктам.', preferredNetworks: 'Федеральные сети, Специализированные сети, HoReCa' },
+        { companyName: 'ООО "Молочная Культура"', inn: '7813409970', companyType: 'Производитель конечного товара', contactName: 'Бородин Алексей Андреевич', contactPosition: 'Генеральный директор', industry: 'Food', activity: 'Продукты питания\\напитки (фуд)', networkCategories: 'растущий', website: 'https://dairyculture.ru/', country: 'Россия', city: 'Сельцо', productName: 'Молочная продукция Молочная Культура', productCategory: 'Молочная продукция', priceCategory: 'Премиум', productDescription: 'Молоко и кисломолочные продукты из Ленинградской области.', preferredNetworks: 'Федеральные сети, Специализированные сети, Региональные сети' }
+      ];
+      const form = document.querySelector('#proposalForm');
+      const statusEl = document.querySelector('#saveStatus');
+      const select = document.querySelector('#existingCompanySelect');
+      const setStatus = (text, error = false) => { statusEl.textContent = text; statusEl.classList.toggle('error', error); };
+      const fillSelect = (id, values) => {
+        const el = document.querySelector('#' + id);
+        values.forEach(value => {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = value;
+          el.append(option);
+        });
+      };
+      fillSelect('companyTypeSelect', ['Производитель конечного товара', 'Дистрибьютор', 'Импортер', 'Торговая марка']);
+      fillSelect('networkWorkCategory', ['новичок', 'растущий', 'опытный']);
+      fillSelect('priceCategory', ['Эконом', 'Средний', 'Средний+', 'Премиум', 'Люкс']);
+      ['Федеральные сети', 'Региональные сети', 'HoReCa', 'Маркетплейсы', 'Специализированные сети', 'Дискаунтеры'].forEach(value => {
+        const label = document.createElement('label');
+        label.className = 'chip';
+        label.innerHTML = `<input type="checkbox" name="preferredNetworks" value="${value}"><span>${value}</span>`;
+        document.querySelector('#preferredNetworkCategories').append(label);
+      });
+      companies.forEach((company, index) => {
+        const option = document.createElement('option');
+        option.value = index;
+        option.textContent = `${company.companyName} · ${company.inn}`;
+        select.append(option);
+      });
+      function applyCompany(index) {
+        const company = companies[index];
+        Object.entries(company).forEach(([name, value]) => {
+          const field = form.elements[name];
+          if (field && field.type !== 'checkbox') field.value = value;
+        });
+        const selected = new Set(company.preferredNetworks.split(',').map(item => item.trim()));
+        form.querySelectorAll('input[name="preferredNetworks"]').forEach(item => item.checked = selected.has(item.value));
+        setStatus(`Демо: карточка ${company.companyName} подставлена в форму.`);
+      }
+      document.querySelector('#selectExistingCompany').addEventListener('click', () => applyCompany(select.value));
+      document.querySelector('#buildPresentationBtn').addEventListener('click', () => {
+        const company = form.elements.companyName.value.trim();
+        if (!company) return setStatus('Сначала выберите или заполните компанию.', true);
+        setStatus(`Демо: агент сформировал бы PPTX для ${company}. Заменены block1-block8, вставлены pic1-pic4 и logo1.`);
+      });
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        const company = form.elements.companyName.value.trim();
+        if (!company) return setStatus('Заполните название компании.', true);
+        setStatus(`Демо: параметры ${company} сохранены в памяти страницы.`);
+      });
+      applyCompany(0);
+    </script>
+  </body>
+</html>
