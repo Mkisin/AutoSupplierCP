@@ -20,7 +20,7 @@ CT = "http://schemas.openxmlformats.org/package/2006/content-types"
 
 NS = {"p": P, "a": A, "r": R, "rel": REL, "ct": CT}
 IMAGE_TOKENS = [
-    "{{pic1}}", "{{pic2}}", "{{pic3}}", "{{pic4}}", "{{pic5}}", "{{pic6}}",
+    "{{pic1}}", "{{pic2}}", "{{pic3}}", "{{pic4}}", "{{pic5}}", "{{pic6}}", "{{pic7}}",
     "{{logo1}}", "{{logo2}}", "{{logo3}}",
 ]
 
@@ -431,12 +431,18 @@ def choose_network_photos(payload, count):
 
     selected = []
     used_networks = set()
+    used_paths = set()
     for score, priority, index, record, reason in scored:
         network_key = normalize(record.get("Сеть", ""))
+        path_key = str(record["_path"].resolve()).lower()
         if network_key and network_key in used_networks:
             continue
+        if path_key in used_paths:
+            continue
         selected.append(record)
-        used_networks.add(network_key)
+        if network_key:
+            used_networks.add(network_key)
+        used_paths.add(path_key)
         if len(selected) >= count:
             break
 
@@ -444,7 +450,16 @@ def choose_network_photos(payload, count):
         for score, priority, index, record, reason in scored:
             if record in selected:
                 continue
+            network_key = normalize(record.get("Сеть", ""))
+            path_key = str(record["_path"].resolve()).lower()
+            if network_key and network_key in used_networks:
+                continue
+            if path_key in used_paths:
+                continue
             selected.append(record)
+            if network_key:
+                used_networks.add(network_key)
+            used_paths.add(path_key)
             if len(selected) >= count:
                 break
 
@@ -474,10 +489,10 @@ def image_map(payload):
         mapping["{{pic2}}"] = product_photo
         sources["{{pic2}}"] = str(product_photo)
         photo_start = 3
-        photo_limit = 4
+        photo_limit = 5
     else:
         photo_start = 2
-        photo_limit = 5
+        photo_limit = 6
 
     photos, photo_report = choose_network_photos(payload, photo_limit)
     for index, photo in enumerate(photos[:photo_limit], start=photo_start):

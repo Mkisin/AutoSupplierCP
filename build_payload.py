@@ -205,11 +205,13 @@ def category_terms(value):
     terms = words(value)
     text = str(value or "").lower()
     if "мяс" in text:
-        terms.update({"мясо", "мясные", "мясопродукты", "деликатесы"})
+        terms.update({"мясо", "мясные", "мясопродукты", "деликатесы", "food"})
     if "молоч" in text or "сыр" in text:
         terms.update({"молочная", "молоко", "сыр", "сыры", "food"})
     if "круп" in text:
         terms.update({"крупы", "бакалея", "food"})
+    if "снек" in text or "батончик" in text or "зож" in text or "полезн" in text:
+        terms.update({"снеки", "батончики", "перекус", "зож", "бакалея", "крупы", "food"})
     if "овощ" in text or "консерв" in text:
         terms.update({"овощная", "консервация", "консервы", "food"})
     if "космет" in text:
@@ -219,6 +221,32 @@ def category_terms(value):
     if "строй" in text or "diy" in text:
         terms.update({"стройтовары", "строительные", "diy"})
     return terms
+
+
+def category_affinity(category_value, review_group):
+    category_text = str(category_value or "").lower()
+    group_text = str(review_group or "").lower()
+    if not category_text or not group_text:
+        return 0, ""
+    if group_text in category_text or category_text in group_text:
+        return 100, "точная/частичная товарная группа"
+
+    snack_like = any(marker in category_text for marker in ["снек", "батончик", "зож", "полезн"])
+    if snack_like:
+        if "круп" in group_text:
+            return 70, "близкая food-группа: снеки/батончики ближе к бакалее и крупам"
+        if "овощ" in group_text or "консерв" in group_text:
+            return 35, "смежная shelf-stable food-группа"
+        if "мяс" in group_text:
+            return 10, "дальняя food-группа"
+
+    food_category = any(marker in category_text for marker in [
+        "food", "питан", "продукт", "снек", "батончик", "круп", "мяс", "молоч", "сыр", "овощ", "консерв"
+    ])
+    food_group = any(marker in group_text for marker in ["круп", "мяс", "молоч", "сыр", "овощ", "консерв"])
+    if food_category and food_group:
+        return 20, "общая food-группа"
+    return 0, ""
 
 
 def split_tags(value):
@@ -267,14 +295,24 @@ def review_candidates(category_value, company_type_value="", price_category_valu
         category_matched = False
         review_group_lower = str(review_group).strip().lower()
         category_lower_value = str(category_value).strip().lower()
+        affinity_score, affinity_reason = category_affinity(category_value, review_group)
+        if affinity_score:
+            score += affinity_score
+            category_matched = affinity_score >= 50
+            reasons.append(affinity_reason)
+
         if review_group_lower and (
             review_group_lower == category_lower_value
             or review_group_lower in category_lower_value
             or category_lower_value in review_group_lower
         ):
-            score += 100
             category_matched = True
-            reasons.append("\u0442\u043e\u0447\u043d\u0430\u044f/\u0447\u0430\u0441\u0442\u0438\u0447\u043d\u0430\u044f \u0442\u043e\u0432\u0430\u0440\u043d\u0430\u044f \u0433\u0440\u0443\u043f\u043f\u0430")
+            if affinity_score < 100:
+                score += 100
+                reasons.append("точная/частичная товарная группа")
+        elif affinity_score and affinity_score < 50:
+            score -= 8
+            reasons.append("понижен приоритет дальней товарной группы")
 
         searchable_category = " ".join([str(review_group), str(review_keywords)])
         category_overlap = category_words & words(searchable_category)
