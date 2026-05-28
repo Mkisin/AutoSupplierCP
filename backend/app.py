@@ -28,6 +28,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_FILE = ROOT / "Данные для разработки.xlsx"
 PHOTO_DIR = ROOT / "Фото товаров"
 STATIC_DIR = ROOT / "frontend"
+DADATA_API_KEY = os.environ.get("DADATA_API_KEY", "e827de6169ff2dd15ed29a07d4489511b80d1463")
+DADATA_FIND_PARTY_URL = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/findById/party"
+DADATA_FIND_OKVED_URL = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/findById/okved2"
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -161,9 +164,9 @@ def _run_presentation_job(job_id: str, company: str) -> None:
 HEADERS = [
     "N",
     "Название компании",
-    "РРќРќ",
+    "ИНН",
     "Тип компании",
-    "Р¤РРћ контакта",
+    "ФИО контакта",
     "Должность контакта",
     "Категория товара",
     "Краткое описание продукции",
@@ -178,13 +181,27 @@ HEADERS = [
     "Ценовая категория",
     "Фото товара",
     "Дата сохранения",
+    "DaData: название",
+    "DaData: статус",
+    "DaData: юр адрес",
+    "DaData: основной вид деятельности",
+    "DaData: среднесписочная численность",
+    "DaData: уставной капитал",
+    "DaData: реестр МСП",
+    "DaData: специальный налоговый режим",
+    "DaData: доходы",
+    "DaData: расходы",
+    "DaData: недоимки",
+    "DaData: штрафы",
+    "DaData: ген. директор",
+    "DaData: обновлено",
 ]
 
 FIELD_TO_HEADER = {
     "companyName": "Название компании",
-    "inn": "РРќРќ",
+    "inn": "ИНН",
     "companyType": "Тип компании",
-    "contactName": "Р¤РРћ контакта",
+    "contactName": "ФИО контакта",
     "contactPosition": "Должность контакта",
     "productName": "Название товара",
     "productCategory": "Категория товара",
@@ -197,7 +214,38 @@ FIELD_TO_HEADER = {
     "city": "Город",
     "preferredNetworks": "Предпочтительные сети",
     "priceCategory": "Ценовая категория",
+    "dadataName": "DaData: название",
+    "dadataStatus": "DaData: статус",
+    "dadataLegalAddress": "DaData: юр адрес",
+    "dadataMainActivity": "DaData: основной вид деятельности",
+    "dadataEmployeeCount": "DaData: среднесписочная численность",
+    "dadataCapital": "DaData: уставной капитал",
+    "dadataSmb": "DaData: реестр МСП",
+    "dadataTaxSystem": "DaData: специальный налоговый режим",
+    "dadataIncome": "DaData: доходы",
+    "dadataExpense": "DaData: расходы",
+    "dadataDebt": "DaData: недоимки",
+    "dadataPenalty": "DaData: штрафы",
+    "dadataManager": "DaData: ген. директор",
+    "dadataUpdatedAt": "DaData: обновлено",
 }
+
+DADATA_FIELDS = [
+    "dadataName",
+    "dadataStatus",
+    "dadataLegalAddress",
+    "dadataMainActivity",
+    "dadataEmployeeCount",
+    "dadataCapital",
+    "dadataSmb",
+    "dadataTaxSystem",
+    "dadataIncome",
+    "dadataExpense",
+    "dadataDebt",
+    "dadataPenalty",
+    "dadataManager",
+    "dadataUpdatedAt",
+]
 
 DEFAULT_OPTIONS = {
     "companyTypes": [
@@ -338,7 +386,7 @@ def _ensure_headers(root: ET.Element, sheet_data: ET.Element, shared: list[str])
     _sort_cells(first_row)
     dimension = root.find(f"{ns}dimension")
     if dimension is not None:
-        dimension.set("ref", f"A1:S{max(_max_used_row(sheet_data, shared), 1)}")
+        dimension.set("ref", f"A1:{_number_to_col(len(HEADERS))}{max(_max_used_row(sheet_data, shared), 1)}")
 
 
 def _number_to_col(number: int) -> str:
@@ -356,6 +404,17 @@ def _sort_cells(row: ET.Element) -> None:
     children.sort(key=lambda c: _col_to_number(re.sub(r"\d+", "", c.attrib.get("r", "A"))))
     for child in children:
         row.append(child)
+
+
+def _replace_row_values(row: ET.Element, row_number: int, values_by_col: dict[str, Any]) -> None:
+    ns = f"{{{MAIN_NS}}}"
+    for col, value in values_by_col.items():
+        target_ref = _cell_ref(col, row_number)
+        for cell in list(row.findall(f"{ns}c")):
+            if cell.attrib.get("r") == target_ref:
+                row.remove(cell)
+        row.append(_inline_cell(col, row_number, value))
+    _sort_cells(row)
 
 
 def _sort_rows(sheet_data: ET.Element) -> None:
@@ -407,11 +466,21 @@ def _save_card_row(data: dict[str, str], photo_path: str, target_row_number: int
                 if header
             }
 
+    data = dict(data)
+    if _digits(str(data.get("inn", ""))) and not any(str(data.get(field, "")).strip() for field in DADATA_FIELDS):
+        try:
+            data.update(_fetch_dadata_company(_digits(str(data.get("inn", "")))))
+        except HTTPException:
+            pass
+
     row_values = [""] * len(HEADERS)
     row_values[0] = str(row_number - 1)
     header_indexes = {header: index for index, header in enumerate(HEADERS)}
     for field, header in FIELD_TO_HEADER.items():
-        row_values[header_indexes[header]] = data.get(field, "").strip()
+        if field in data:
+            row_values[header_indexes[header]] = str(data.get(field, "")).strip()
+        else:
+            row_values[header_indexes[header]] = existing_values.get(header, "")
     row_values[header_indexes["Фото товара"]] = photo_path or existing_values.get("Фото товара", "")
     row_values[header_indexes["Дата сохранения"]] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -426,7 +495,7 @@ def _save_card_row(data: dict[str, str], photo_path: str, target_row_number: int
     _sort_rows(sheet_data)
     dimension = root.find(f"{ns}dimension")
     if dimension is not None:
-        dimension.set("ref", f"A1:S{row_number}")
+        dimension.set("ref", f"A1:{_number_to_col(len(HEADERS))}{row_number}")
 
     parts[sheet_path] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
@@ -449,6 +518,113 @@ def _save_card_row(data: dict[str, str], photo_path: str, target_row_number: int
         raise
 
     return row_number
+
+
+def _update_card_inn(row_number: int, inn: str) -> None:
+    inn = _digits(inn)
+    if not _is_valid_inn(inn):
+        raise HTTPException(status_code=400, detail="Некорректный ИНН")
+    if row_number <= 1:
+        raise HTTPException(status_code=400, detail="Некорректная строка карточки")
+
+    names, parts = _xlsx_parts()
+    shared = _shared_strings(parts)
+    sheet_path = _sheet_target(parts, "Карточка клиента")
+    root = ET.fromstring(parts[sheet_path])
+    ns = f"{{{MAIN_NS}}}"
+    sheet_data = root.find(f"{ns}sheetData")
+    if sheet_data is None:
+        raise HTTPException(status_code=404, detail="Лист карточек пуст")
+
+    _ensure_headers(root, sheet_data, shared)
+    header_row = sheet_data.find(f"{ns}row[@r='1']")
+    target_row = sheet_data.find(f"{ns}row[@r='{row_number}']")
+    if header_row is None or target_row is None:
+        raise HTTPException(status_code=404, detail="Карточка не найдена")
+
+    headers_by_col = _row_values(header_row, shared)
+    inn_col = next((col for col, header in headers_by_col.items() if header.strip() == "ИНН"), None)
+    if not inn_col:
+        raise HTTPException(status_code=500, detail="Колонка ИНН не найдена")
+
+    target_ref = _cell_ref(inn_col, row_number)
+    for cell in list(target_row.findall(f"{ns}c")):
+        if cell.attrib.get("r") == target_ref:
+            target_row.remove(cell)
+    target_row.append(_inline_cell(inn_col, row_number, inn))
+    _sort_cells(target_row)
+
+    parts[sheet_path] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+    fd, temp_name = tempfile.mkstemp(suffix=".xlsx", dir=ROOT)
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as target:
+            for name in names:
+                target.writestr(name, parts[name])
+        temp_path.replace(DATA_FILE)
+    except PermissionError as exc:
+        temp_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=423,
+            detail="Не удалось сохранить ИНН. Закройте Excel-файл 'Данные для разработки.xlsx' и попробуйте снова.",
+        ) from exc
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _update_card_dadata(row_number: int, dadata: dict[str, str]) -> None:
+    if row_number <= 1:
+        raise HTTPException(status_code=400, detail="Некорректная строка карточки")
+
+    names, parts = _xlsx_parts()
+    shared = _shared_strings(parts)
+    sheet_path = _sheet_target(parts, "Карточка клиента")
+    root = ET.fromstring(parts[sheet_path])
+    ns = f"{{{MAIN_NS}}}"
+    sheet_data = root.find(f"{ns}sheetData")
+    if sheet_data is None:
+        raise HTTPException(status_code=404, detail="Лист карточек пуст")
+
+    _ensure_headers(root, sheet_data, shared)
+    header_row = sheet_data.find(f"{ns}row[@r='1']")
+    target_row = sheet_data.find(f"{ns}row[@r='{row_number}']")
+    if header_row is None or target_row is None:
+        raise HTTPException(status_code=404, detail="Карточка не найдена")
+
+    headers_by_col = _row_values(header_row, shared)
+    values_by_col = {}
+    for field in DADATA_FIELDS:
+        header = FIELD_TO_HEADER[field]
+        col = next((col for col, value in headers_by_col.items() if value.strip() == header), None)
+        if col:
+            values_by_col[col] = dadata.get(field, "")
+    _replace_row_values(target_row, row_number, values_by_col)
+
+    dimension = root.find(f"{ns}dimension")
+    if dimension is not None:
+        dimension.set("ref", f"A1:{_number_to_col(len(HEADERS))}{max(_max_used_row(sheet_data, shared), row_number)}")
+    parts[sheet_path] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+    fd, temp_name = tempfile.mkstemp(suffix=".xlsx", dir=ROOT)
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as target:
+            for name in names:
+                target.writestr(name, parts[name])
+        temp_path.replace(DATA_FILE)
+    except PermissionError as exc:
+        temp_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=423,
+            detail="Не удалось сохранить сведения DaData. Закройте Excel-файл и попробуйте снова.",
+        ) from exc
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def _read_cards() -> list[dict[str, str]]:
@@ -505,9 +681,297 @@ def _save_photo(photo: UploadFile | None, company_name: str) -> str:
     return str(target.relative_to(ROOT))
 
 
+def _digits(value: str) -> str:
+    return re.sub(r"\D+", "", value or "")
+
+
+def _is_valid_inn(inn: str) -> bool:
+    inn = _digits(inn)
+    if len(inn) == 10:
+        weights = [2, 4, 10, 3, 5, 9, 4, 6, 8]
+        return sum(int(inn[index]) * weights[index] for index in range(9)) % 11 % 10 == int(inn[9])
+    if len(inn) == 12:
+        weights_11 = [7, 2, 4, 10, 3, 5, 9, 4, 6, 8]
+        weights_12 = [3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8]
+        check_11 = sum(int(inn[index]) * weights_11[index] for index in range(10)) % 11 % 10
+        check_12 = sum(int(inn[index]) * weights_12[index] for index in range(11)) % 11 % 10
+        return check_11 == int(inn[10]) and check_12 == int(inn[11])
+    return False
+
+
+def _normalize_website_url(website: str) -> str:
+    website = website.strip()
+    if not website:
+        raise HTTPException(status_code=400, detail="Укажите сайт компании")
+    if not re.match(r"^https?://", website, re.IGNORECASE):
+        website = "https://" + website
+    parsed = urllib.parse.urlparse(website)
+    if not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Некорректный адрес сайта")
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
+
+
+def _site_probe_urls(website: str) -> list[str]:
+    base = _normalize_website_url(website)
+    parsed = urllib.parse.urlparse(base)
+    root = f"{parsed.scheme}://{parsed.netloc}"
+    paths = [
+        parsed.path if parsed.path else "",
+        "/contacts",
+        "/contact",
+        "/kontakty",
+        "/rekvizity",
+        "/requisites",
+        "/about",
+        "/privacy",
+        "/privacy-policy",
+        "/politika-konfidentsialnosti",
+    ]
+    urls: list[str] = []
+    for path in paths:
+        url = root + (path if path.startswith("/") else f"/{path}" if path else "")
+        if url not in urls:
+            urls.append(url)
+    return urls[:10]
+
+
+def _read_public_text(url: str) -> str:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 AutoSupplierCP",
+            "Accept": "text/html,application/xhtml+xml,application/pdf,text/plain,*/*;q=0.8",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=7) as response:
+        content_type = response.headers.get("Content-Type", "")
+        if "pdf" in content_type.lower():
+            return ""
+        data = response.read(700_000)
+    charset_match = re.search(r"charset=([\w\-]+)", content_type, re.IGNORECASE)
+    encodings = [charset_match.group(1)] if charset_match else []
+    encodings.extend(["utf-8", "windows-1251"])
+    for encoding in encodings:
+        try:
+            return data.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", errors="ignore")
+
+
+def _extract_inns(text: str) -> list[str]:
+    candidates: list[str] = []
+    normalized = re.sub(r"[\u00a0\s]+", " ", text)
+    patterns = [
+        r"(?i)(?:ИНН|INN)\D{0,40}((?:\d[\s\-]*){10,12})",
+        r"\b((?:\d[\s\-]*){10}|(?:\d[\s\-]*){12})\b",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, normalized):
+            inn = _digits(match.group(1))
+            if inn not in candidates and _is_valid_inn(inn):
+                candidates.append(inn)
+    return candidates
+
+
+def _repair_mojibake(value: Any) -> str:
+    text = str(value or "")
+    if "Ð" not in text and "Ñ" not in text:
+        return text
+    try:
+        return text.encode("latin1").decode("utf-8")
+    except UnicodeError:
+        return text
+
+
+def _format_money(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if amount.is_integer():
+        return f"{int(amount):,}".replace(",", " ")
+    return f"{amount:,.2f}".replace(",", " ")
+
+
+def _format_count(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        return f"{int(value):,}".replace(",", " ")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _status_label(value: Any) -> str:
+    labels = {
+        "ACTIVE": "Действующая",
+        "LIQUIDATING": "Ликвидируется",
+        "LIQUIDATED": "Ликвидирована",
+        "BANKRUPT": "Банкротство",
+        "REORGANIZING": "Реорганизуется",
+    }
+    text = str(value or "")
+    return labels.get(text, text)
+
+
+def _tax_system_label(value: Any) -> str:
+    labels = {
+        "AUSN": "АУСН",
+        "ESHN": "ЕСХН",
+        "SRP": "СРП",
+        "USN": "УСН",
+    }
+    text = str(value or "")
+    return labels.get(text, text)
+
+
+def _smb_label(smb: Any) -> str:
+    if not isinstance(smb, dict):
+        return ""
+    labels = {"MICRO": "микро", "SMALL": "малое", "MEDIUM": "среднее"}
+    category = labels.get(str(smb.get("category") or ""), str(smb.get("category") or ""))
+    return category or "есть запись"
+
+
+def _dadata_post(url: str, payload: dict[str, Any], timeout: int = 14) -> dict[str, Any]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Token {DADATA_API_KEY}",
+            "User-Agent": "AutoSupplierCP",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _okved_name(code: str) -> str:
+    code = str(code or "").strip()
+    if not code:
+        return ""
+    try:
+        payload = _dadata_post(DADATA_FIND_OKVED_URL, {"query": code, "count": 1})
+    except Exception:
+        return ""
+    suggestions = payload.get("suggestions") or []
+    if not suggestions:
+        return ""
+    data = suggestions[0].get("data") or {}
+    return str(data.get("name") or suggestions[0].get("value") or "")
+
+
+def _main_okved(data: dict[str, Any]) -> str:
+    for item in data.get("okveds") or []:
+        if item.get("main"):
+            code = str(item.get("code") or "")
+            name = str(item.get("name") or "")
+            return f"{code} {name}".strip()
+    code = str(data.get("okved") or "")
+    name = _okved_name(code)
+    return f"{code} - {name}".strip(" -") if name else code
+
+
+def _manager_name(data: dict[str, Any]) -> str:
+    management = data.get("management") if isinstance(data.get("management"), dict) else {}
+    name = str(management.get("name") or "")
+    post = str(management.get("post") or "")
+    if name:
+        return f"{post}: {name}" if post else name
+
+    managers = data.get("managers") or []
+    if managers:
+        manager = managers[0]
+        fio = manager.get("fio") if isinstance(manager.get("fio"), dict) else {}
+        source = fio.get("source") or manager.get("name") or ""
+        post = manager.get("post") or ""
+        return f"{post}: {source}" if post and source else str(source or "")
+    return ""
+
+
+def _dadata_company_from_suggestion(suggestion: dict[str, Any]) -> dict[str, str]:
+    data = suggestion.get("data") or {}
+    finance = data.get("finance") if isinstance(data.get("finance"), dict) else {}
+    capital = data.get("capital") if isinstance(data.get("capital"), dict) else {}
+    documents = data.get("documents") if isinstance(data.get("documents"), dict) else {}
+    name = data.get("name") if isinstance(data.get("name"), dict) else {}
+    state = data.get("state") if isinstance(data.get("state"), dict) else {}
+    address = data.get("address") if isinstance(data.get("address"), dict) else {}
+    capital_value = capital.get("value")
+    capital_text = ""
+    if capital_value not in (None, ""):
+        capital_type = str(capital.get("type") or "Уставной капитал")
+        capital_text = f"{capital_type}: {_format_money(capital_value)}"
+
+    return {
+        "dadataName": str(name.get("full_with_opf") or suggestion.get("value") or ""),
+        "dadataStatus": _status_label(state.get("status")),
+        "dadataLegalAddress": str(address.get("unrestricted_value") or address.get("value") or ""),
+        "dadataMainActivity": _main_okved(data),
+        "dadataEmployeeCount": _format_count(data.get("employee_count")),
+        "dadataCapital": capital_text,
+        "dadataSmb": _smb_label(documents.get("smb")),
+        "dadataTaxSystem": _tax_system_label(finance.get("tax_system")),
+        "dadataIncome": _format_money(finance.get("income")),
+        "dadataExpense": _format_money(finance.get("expense")),
+        "dadataDebt": _format_money(finance.get("debt")),
+        "dadataPenalty": _format_money(finance.get("penalty")),
+        "dadataManager": _manager_name(data),
+        "dadataUpdatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _fetch_dadata_company(inn: str) -> dict[str, str]:
+    inn = _digits(inn)
+    if not _is_valid_inn(inn):
+        raise HTTPException(status_code=400, detail="Некорректный ИНН для запроса DaData")
+    if not DADATA_API_KEY:
+        raise HTTPException(status_code=500, detail="Не задан API-ключ DaData")
+
+    try:
+        payload = _dadata_post(DADATA_FIND_PARTY_URL, {"query": inn, "count": 1, "branch_type": "MAIN"})
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Не удалось получить сведения DaData") from exc
+
+    suggestions = payload.get("suggestions") or []
+    if not suggestions:
+        raise HTTPException(status_code=404, detail="DaData не нашла компанию по этому ИНН")
+    return _dadata_company_from_suggestion(suggestions[0])
+
+
+def _find_site_inns(website: str) -> list[dict[str, str]]:
+    found: dict[str, str] = {}
+    for url in _site_probe_urls(website):
+        try:
+            text = _read_public_text(url)
+        except Exception:
+            continue
+        for inn in _extract_inns(text):
+            found.setdefault(inn, url)
+        if found:
+            break
+    return [{"inn": inn, "sourceUrl": source_url} for inn, source_url in found.items()]
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/styles.css")
+def styles() -> FileResponse:
+    return FileResponse(STATIC_DIR / "styles.css", media_type="text/css")
+
+
+@app.get("/app.js")
+def frontend_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "app.js", media_type="application/javascript")
 
 
 @app.get("/api/options")
@@ -555,11 +1019,16 @@ def company_search(query: str) -> dict[str, Any]:
         if not token:
             return {"items": []}
         url = f"https://egrul.nalog.ru/search-result/{urllib.parse.quote(token)}"
-        with urllib.request.urlopen(
-            urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 AutoSupplierCP"}),
-            timeout=12,
-        ) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        payload = {"rows": []}
+        for attempt in range(5):
+            with urllib.request.urlopen(
+                urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 AutoSupplierCP"}),
+                timeout=12,
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if payload.get("rows") or attempt == 4:
+                break
+            time.sleep(0.7)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -570,13 +1039,34 @@ def company_search(query: str) -> dict[str, Any]:
     for item in payload.get("rows", [])[:10]:
         items.append(
             {
-                "name": item.get("n", ""),
+                "name": _repair_mojibake(item.get("n", "")),
                 "inn": item.get("i", ""),
-                "address": item.get("a", ""),
-                "status": item.get("s", ""),
+                "address": _repair_mojibake(item.get("a", "")),
+                "status": _repair_mojibake(item.get("s", "")),
             }
         )
     return {"items": items}
+
+
+@app.get("/api/site-inn-search")
+def site_inn_search(website: str, selectedInn: str = "") -> dict[str, Any]:
+    items = _find_site_inns(website)
+    selected = _digits(selectedInn)
+    return {
+        "items": items,
+        "selectedInn": selected,
+        "matchedSelectedInn": bool(selected and any(item["inn"] == selected for item in items)),
+    }
+
+
+@app.post("/api/dadata-company")
+def dadata_company(payload: dict[str, Any]) -> dict[str, Any]:
+    inn = _digits(str(payload.get("inn", "")))
+    details = _fetch_dadata_company(inn)
+    row_number_raw = str(payload.get("rowNumber", "")).strip()
+    if row_number_raw.isdigit():
+        _update_card_dadata(int(row_number_raw), details)
+    return {"items": details}
 
 
 @app.post("/api/cards")
@@ -613,6 +1103,13 @@ async def save_card(
     target_row_number = int(row_number_raw) if row_number_raw.isdigit() and int(row_number_raw) > 1 else None
     row_number = _save_card_row(data, photo_path, target_row_number)
     return {"ok": True, "row": row_number, "mode": "updated" if target_row_number else "created", "photoPath": photo_path}
+
+
+@app.patch("/api/cards/{row_number}/inn")
+def update_card_inn(row_number: int, payload: dict[str, Any]) -> dict[str, Any]:
+    inn = _digits(str(payload.get("inn", "")))
+    _update_card_inn(row_number, inn)
+    return {"ok": True, "row": row_number, "inn": inn}
 
 
 @app.post("/api/presentations")

@@ -5,6 +5,7 @@ const resultsBox = document.querySelector("#companyResults");
 const findInnBtn = document.querySelector("#findInnBtn");
 const companyNameInput = document.querySelector("#companyName");
 const innInput = document.querySelector("#inn");
+const websiteInput = form.elements.website;
 const existingCompanySelect = document.querySelector("#existingCompanySelect");
 const selectExistingCompany = document.querySelector("#selectExistingCompany");
 const buildPresentationBtn = document.querySelector("#buildPresentationBtn");
@@ -12,9 +13,17 @@ const presentationProgress = document.querySelector("#presentationProgress");
 const presentationProgressText = document.querySelector("#presentationProgressText");
 const presentationProgressPercent = document.querySelector("#presentationProgressPercent");
 const presentationProgressBar = document.querySelector("#presentationProgressBar");
+const dadataDetails = document.querySelector("#dadataDetails");
+const dadataGrid = document.querySelector("#dadataGrid");
+const dadataSummary = document.querySelector("#dadataSummary");
+const dadataUpdatedAt = document.querySelector("#dadataUpdatedAt");
+const toggleDadataBtn = document.querySelector("#toggleDadataBtn");
+const refreshDadataBtn = document.querySelector("#refreshDadataBtn");
 const buildPresentationDefaultText = buildPresentationBtn.textContent;
 let existingCards = [];
 let activePresentationJobId = null;
+let activeSearchRequestId = 0;
+let dadataExpanded = false;
 
 const optionIds = {
   industries: "industries",
@@ -22,6 +31,37 @@ const optionIds = {
   productCategories: "productCategories",
 };
 const ADD_COMPANY_TYPE = "__add_company_type__";
+const dadataFields = [
+  ["dadataName", "Название"],
+  ["dadataStatus", "Статус"],
+  ["dadataLegalAddress", "Юр адрес"],
+  ["dadataMainActivity", "Основной вид деятельности"],
+  ["dadataEmployeeCount", "Среднесписочная численность"],
+  ["dadataCapital", "Уставной капитал"],
+  ["dadataSmb", "Реестр МСП"],
+  ["dadataTaxSystem", "Спец. налоговый режим"],
+  ["dadataIncome", "Доходы"],
+  ["dadataExpense", "Расходы"],
+  ["dadataDebt", "Недоимки"],
+  ["dadataPenalty", "Штрафы"],
+  ["dadataManager", "Ген. директор"],
+];
+const dadataHeaderByField = {
+  dadataName: "DaData: название",
+  dadataStatus: "DaData: статус",
+  dadataLegalAddress: "DaData: юр адрес",
+  dadataMainActivity: "DaData: основной вид деятельности",
+  dadataEmployeeCount: "DaData: среднесписочная численность",
+  dadataCapital: "DaData: уставной капитал",
+  dadataSmb: "DaData: реестр МСП",
+  dadataTaxSystem: "DaData: специальный налоговый режим",
+  dadataIncome: "DaData: доходы",
+  dadataExpense: "DaData: расходы",
+  dadataDebt: "DaData: недоимки",
+  dadataPenalty: "DaData: штрафы",
+  dadataManager: "DaData: ген. директор",
+  dadataUpdatedAt: "DaData: обновлено",
+};
 
 function fillDatalist(id, values) {
   const list = document.querySelector(`#${id}`);
@@ -96,8 +136,161 @@ function setStatus(element, text, isError = false) {
   element.classList.toggle("error", isError);
 }
 
+function setSearchLoading(isLoading) {
+  searchStatus.classList.toggle("is-loading", isLoading);
+}
+
+function clearDadataDetails() {
+  dadataDetails.hidden = true;
+  dadataExpanded = false;
+  dadataDetails.classList.remove("is-expanded");
+  dadataGrid.innerHTML = "";
+  dadataSummary.textContent = "";
+  dadataUpdatedAt.textContent = "";
+  toggleDadataBtn.textContent = "Развернуть";
+  toggleDadataBtn.setAttribute("aria-expanded", "false");
+}
+
+function setDadataExpanded(isExpanded) {
+  dadataExpanded = isExpanded;
+  dadataDetails.classList.toggle("is-expanded", isExpanded);
+  toggleDadataBtn.textContent = isExpanded ? "Свернуть" : "Развернуть";
+  toggleDadataBtn.setAttribute("aria-expanded", String(isExpanded));
+}
+
+function renderDadataDetails(details = {}) {
+  const visibleItems = dadataFields
+    .map(([field, label]) => ({ field, label, value: details[field] || "нет данных в ответе DaData" }));
+  dadataGrid.innerHTML = "";
+  if (!Object.values(details).some((value) => value)) {
+    clearDadataDetails();
+    return;
+  }
+
+  visibleItems.forEach((item) => {
+    const wrapper = document.createElement("dl");
+    wrapper.className = "dadata-item";
+    const term = document.createElement("dt");
+    term.textContent = item.label;
+    const value = document.createElement("dd");
+    value.textContent = item.value;
+    wrapper.append(term, value);
+    dadataGrid.append(wrapper);
+  });
+  dadataSummary.textContent = details.dadataName || "Название не получено";
+  dadataUpdatedAt.textContent = details.dadataUpdatedAt ? `Обновлено: ${details.dadataUpdatedAt}` : "";
+  setDadataExpanded(false);
+  dadataDetails.hidden = false;
+}
+
+function dadataDetailsFromCard(card) {
+  const details = {};
+  Object.entries(dadataHeaderByField).forEach(([field, header]) => {
+    details[field] = valueBy(card, header);
+  });
+  return details;
+}
+
+async function loadDadataByInn(inn, { rowNumber = "", silent = false } = {}) {
+  const normalizedInn = String(inn || "").replace(/\D+/g, "");
+  if (!normalizedInn) {
+    clearDadataDetails();
+    return null;
+  }
+  refreshDadataBtn.disabled = true;
+  if (!silent) {
+    setStatus(searchStatus, "Получаю сведения DaData...");
+  }
+  try {
+    const response = await fetch("/api/dadata-company", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ inn: normalizedInn, rowNumber }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Не удалось получить сведения DaData");
+    }
+    renderDadataDetails(payload.items || {});
+    const card = existingCards.find((item) => String(item._rowNumber) === String(rowNumber));
+    if (card && payload.items) {
+      Object.entries(dadataHeaderByField).forEach(([field, header]) => {
+        card[header] = payload.items[field] || "";
+      });
+    }
+    if (!silent) {
+      setStatus(searchStatus, "Сведения DaData получены.");
+    }
+    return payload.items || {};
+  } catch (error) {
+    if (!silent) {
+      setStatus(searchStatus, error.message, true);
+    }
+    return null;
+  } finally {
+    refreshDadataBtn.disabled = false;
+  }
+}
+
 function valueBy(card, header) {
   return card[header] || card[header.trim()] || "";
+}
+
+function innBy(card) {
+  return valueBy(card, "ИНН") || valueBy(card, "РРќРќ") || valueBy(card, "Р ВР РќР Рќ");
+}
+
+function contactNameBy(card) {
+  return (
+    valueBy(card, "ФИО контакта") ||
+    valueBy(card, "Р¤РРћ контакта") ||
+    valueBy(card, "Р¤РРћ РєРѕРЅС‚Р°РєС‚Р°") ||
+    valueBy(card, "Р В¤Р ВР С› РєРѕРЅС‚Р°РєС‚Р°")
+  );
+}
+
+function currentRowNumber() {
+  return document.querySelector("#rowNumber").value.trim();
+}
+
+function renderExistingCompanyOptions() {
+  existingCompanySelect.innerHTML = "";
+  existingCards.forEach((card) => {
+    const option = document.createElement("option");
+    option.value = card._rowNumber;
+    option.textContent = `${valueBy(card, "Название компании") || "Компания без названия"}${innBy(card) ? ` · ${innBy(card)}` : ""}`;
+    existingCompanySelect.append(option);
+  });
+}
+
+async function rememberInnForExistingCard(inn) {
+  const normalizedInn = String(inn || "").replace(/\D+/g, "");
+  const rowNumber = currentRowNumber();
+  if (!rowNumber || !normalizedInn) {
+    return;
+  }
+
+  const card = existingCards.find((item) => String(item._rowNumber) === String(rowNumber));
+  if (card && innBy(card) === normalizedInn) {
+    return;
+  }
+
+  const response = await fetch(`/api/cards/${encodeURIComponent(rowNumber)}/inn`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ inn: normalizedInn }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.detail || "Не удалось сохранить ИНН в карточке");
+  }
+
+  if (card) {
+    card["ИНН"] = normalizedInn;
+  }
+  renderExistingCompanyOptions();
+  existingCompanySelect.value = rowNumber;
+  setStatus(saveStatus, `ИНН ${normalizedInn} сохранен в строке ${rowNumber}.`);
 }
 
 function setFormValue(name, value) {
@@ -137,9 +330,9 @@ function applyExistingCard(rowNumber) {
   resetPresentationProgress();
   setFormValue("_rowNumber", card._rowNumber);
   setFormValue("companyName", valueBy(card, "Название компании"));
-  setFormValue("inn", valueBy(card, "РРќРќ"));
+  setFormValue("inn", innBy(card));
   setCompanyType(valueBy(card, "Тип компании"));
-  setFormValue("contactName", valueBy(card, "Р¤РРћ контакта"));
+  setFormValue("contactName", contactNameBy(card));
   setFormValue("contactPosition", valueBy(card, "Должность контакта"));
   setFormValue("industry", valueBy(card, "Отрасль"));
   setFormValue("activity", valueBy(card, "Сфера деятельности"));
@@ -153,6 +346,12 @@ function applyExistingCard(rowNumber) {
   setFormValue("productDescription", valueBy(card, "Краткое описание продукции"));
   setPreferredNetworks(valueBy(card, "Предпочтительные сети"));
   setStatus(saveStatus, `Редактируется строка ${card._rowNumber}: ${valueBy(card, "Название компании")}`);
+  renderDadataDetails(dadataDetailsFromCard(card));
+  if (innInput.value.trim()) {
+    loadDadataByInn(innInput.value, { rowNumber: card._rowNumber, silent: true });
+  } else {
+    searchCompany({ auto: true });
+  }
 }
 
 function clearSelectedCompany() {
@@ -161,6 +360,7 @@ function clearSelectedCompany() {
   document.querySelector("input[name='country']").value = "Россия";
   setCompanyType("");
   setPreferredNetworks("");
+  clearDadataDetails();
   saveStatus.textContent = "";
 }
 
@@ -171,13 +371,7 @@ async function loadExistingCards() {
   }
   const payload = await response.json();
   existingCards = payload.items || [];
-  existingCompanySelect.innerHTML = "";
-  existingCards.forEach((card) => {
-    const option = document.createElement("option");
-    option.value = card._rowNumber;
-    option.textContent = `${valueBy(card, "Название компании") || "Компания без названия"}${valueBy(card, "РРќРќ") ? ` · ${valueBy(card, "РРќРќ")}` : ""}`;
-    existingCompanySelect.append(option);
-  });
+  renderExistingCompanyOptions();
 }
 
 async function loadOptions() {
@@ -196,52 +390,140 @@ async function loadOptions() {
   await loadExistingCards();
 }
 
-function renderCompanyResults(items) {
+function renderCompanyResults(items, siteInns = []) {
   resultsBox.innerHTML = "";
+  const siteInnSet = new Set(siteInns.map((item) => item.inn));
   items.forEach((item) => {
+    const matchedBySite = item.inn && siteInnSet.has(item.inn);
     const button = document.createElement("button");
     button.type = "button";
     button.className = "result-item";
     button.innerHTML = `
       <strong>${item.name || "Компания без названия"}</strong>
-      <small>РРќРќ ${item.inn || "не указан"}${item.address ? ` · ${item.address}` : ""}${item.status ? ` · ${item.status}` : ""}</small>
+      <small>ИНН ${item.inn || "не указан"}${matchedBySite ? " · подтверждено сайтом" : ""}${item.address ? ` · ${item.address}` : ""}${item.status ? ` · ${item.status}` : ""}</small>
     `;
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       companyNameInput.value = item.name || companyNameInput.value;
       innInput.value = item.inn || innInput.value;
       resultsBox.innerHTML = "";
-      setStatus(searchStatus, "Компания выбрана из базы ФНС.");
+      setStatus(searchStatus, matchedBySite ? "Компания выбрана из базы ФНС, ИНН подтвержден на сайте." : "Компания выбрана из базы ФНС.");
+      try {
+        await rememberInnForExistingCard(item.inn);
+        await loadDadataByInn(item.inn, { rowNumber: currentRowNumber() });
+      } catch (error) {
+        setStatus(searchStatus, error.message, true);
+      }
     });
     resultsBox.append(button);
   });
 }
 
-async function searchCompany() {
-  const query = companyNameInput.value.trim() || innInput.value.trim();
-  if (query.length < 3) {
-    setStatus(searchStatus, "Введите хотя бы 3 символа названия или РРќРќ.", true);
+function normalizeCompanySearchPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return { items: [], detail: "" };
+  }
+  return {
+    ...payload,
+    items: Array.isArray(payload.items) ? payload.items : [],
+  };
+}
+
+async function searchSiteInn(website) {
+  if (!website) {
+    return { items: [] };
+  }
+  const response = await fetch(`/api/site-inn-search?website=${encodeURIComponent(website)}&selectedInn=${encodeURIComponent(innInput.value.trim())}`);
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.detail || "Не удалось проверить ИНН на сайте компании");
+  }
+  return payload;
+}
+
+async function searchCompany(options = {}) {
+  const existingInn = innInput.value.trim().replace(/\D+/g, "");
+  if (existingInn) {
+    resultsBox.innerHTML = "";
+    if (!options.auto) {
+      setStatus(searchStatus, "ИНН уже указан, поиск не требуется.");
+    }
     return;
   }
 
-  findInnBtn.disabled = true;
-  resultsBox.innerHTML = "";
-  setStatus(searchStatus, "РС‰Сѓ компанию в открытой базе ФНС...");
-  try {
-    const response = await fetch(`/api/company-search?query=${encodeURIComponent(query)}`);
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.detail || "Поиск временно недоступен");
+  const query = companyNameInput.value.trim();
+  const website = websiteInput.value.trim();
+  if (query.length < 3 && !website) {
+    if (!options.auto) {
+      setStatus(searchStatus, "Введите хотя бы 3 символа названия или ИНН.", true);
     }
-    if (!payload.items.length) {
-      setStatus(searchStatus, "Варианты не найдены. РРќРќ можно ввести вручную.", true);
+    return;
+  }
+
+  const requestId = ++activeSearchRequestId;
+  findInnBtn.disabled = true;
+  setSearchLoading(true);
+  resultsBox.innerHTML = "";
+  setStatus(
+    searchStatus,
+    query.length >= 3 && website
+      ? `Ищу "${query}" в ФНС и проверяю ИНН на сайте...`
+      : query.length >= 3
+        ? `Ищу "${query}" в открытой базе ФНС...`
+        : "Проверяю ИНН на сайте компании...",
+  );
+  try {
+    const companyRequest = query.length >= 3
+      ? fetch(`/api/company-search?query=${encodeURIComponent(query)}`)
+      : Promise.resolve(null);
+    const [response, sitePayload] = await Promise.all([
+      companyRequest,
+      searchSiteInn(website).catch(() => ({ items: [], error: true })),
+    ]);
+    if (requestId !== activeSearchRequestId) {
       return;
     }
-    setStatus(searchStatus, payload.items.length > 1 ? "Выберите подходящую компанию." : "Найден один вариант.");
-    renderCompanyResults(payload.items);
+
+    const payload = normalizeCompanySearchPayload(response ? await response.json() : { items: [] });
+    const fnsUnavailable = Boolean(response && !response.ok);
+    const siteInns = sitePayload.items || [];
+    const singleSiteInn = siteInns.length === 1 ? siteInns[0].inn : "";
+    const matchingItem = singleSiteInn ? payload.items.find((item) => item.inn === singleSiteInn) : null;
+    if (singleSiteInn && !innInput.value.trim()) {
+      innInput.value = singleSiteInn;
+      await rememberInnForExistingCard(singleSiteInn);
+      await loadDadataByInn(singleSiteInn, { rowNumber: currentRowNumber(), silent: true });
+    }
+    if (!payload.items.length) {
+      if (singleSiteInn) {
+        setStatus(
+          searchStatus,
+          fnsUnavailable
+            ? `ФНС сейчас недоступна. ИНН найден на сайте: ${singleSiteInn}.`
+            : `В ФНС варианты по названию не найдены. ИНН найден на сайте: ${singleSiteInn}.`,
+          fnsUnavailable,
+        );
+      } else if (fnsUnavailable) {
+        setStatus(searchStatus, payload.detail || "ФНС сейчас недоступна. ИНН можно ввести вручную или повторить поиск позже.", true);
+      } else {
+        setStatus(searchStatus, query.length >= 3 ? "Варианты не найдены. ИНН можно ввести вручную." : "На сайте ИНН не найден.", true);
+      }
+      return;
+    }
+    if (matchingItem) {
+      setStatus(searchStatus, `ИНН ${singleSiteInn} найден в ФНС и подтвержден сайтом. Выберите подходящую компанию.`);
+    } else if (singleSiteInn) {
+      setStatus(searchStatus, `На сайте найден ИНН ${singleSiteInn}, но среди вариантов ФНС по названию точного совпадения нет. Проверьте компанию перед выбором.`, true);
+    } else {
+      setStatus(searchStatus, payload.items.length > 1 ? "Выберите подходящую компанию." : "Найден один вариант.");
+    }
+    renderCompanyResults(payload.items, siteInns);
   } catch (error) {
     setStatus(searchStatus, error.message, true);
   } finally {
-    findInnBtn.disabled = false;
+    if (requestId === activeSearchRequestId) {
+      setSearchLoading(false);
+      findInnBtn.disabled = false;
+    }
   }
 }
 
@@ -278,6 +560,7 @@ async function saveCard(event) {
     document.querySelector("#rowNumber").value = "";
     document.querySelector("input[name='country']").value = "Россия";
     resultsBox.innerHTML = "";
+    clearDadataDetails();
     searchStatus.textContent = "";
     await loadOptions();
     if (wasUpdate) {
@@ -347,6 +630,12 @@ selectExistingCompany.addEventListener("click", () => {
   if (existingCompanySelect.value) {
     applyExistingCard(existingCompanySelect.value);
   }
+});
+refreshDadataBtn.addEventListener("click", () => {
+  loadDadataByInn(innInput.value, { rowNumber: currentRowNumber() });
+});
+toggleDadataBtn.addEventListener("click", () => {
+  setDadataExpanded(!dadataExpanded);
 });
 buildPresentationBtn.addEventListener("click", async () => {
   const company = companyNameInput.value.trim();

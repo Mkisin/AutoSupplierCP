@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Параметры КП</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260527-sticky-progress" />
+    <link rel="stylesheet" href="styles.css?v=20260528-dadata-details" />
   </head>
   <body>
     <main class="page-shell">
@@ -61,6 +61,20 @@
 
           <div id="searchStatus" class="status muted"></div>
           <div id="companyResults" class="results"></div>
+          <div id="dadataDetails" class="dadata-panel" hidden>
+            <div class="dadata-head">
+              <div>
+                <span>Сведения от DaData</span>
+                <p id="dadataSummary"></p>
+                <p id="dadataUpdatedAt"></p>
+              </div>
+              <div class="dadata-actions">
+                <button type="button" id="toggleDadataBtn" aria-expanded="false">Развернуть</button>
+                <button type="button" id="refreshDadataBtn">Обновить</button>
+              </div>
+            </div>
+            <div id="dadataGrid" class="dadata-grid"></div>
+          </div>
 
           <div class="field-row three">
             <label>
@@ -186,6 +200,6 @@
       </form>
     </main>
 
-    <script src="/static/app.js?v=20260527-sticky-progress"></script>
+    <script src="app.js?v=20260528-dadata-collapsible"></script>
   </body>
 </html>
