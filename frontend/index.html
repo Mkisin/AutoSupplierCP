@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Параметры КП</title>
-    <link rel="stylesheet" href="styles.css?v=20260528-dadata-details" />
+    <link rel="stylesheet" href="styles.css?v=20260602-ai-selection" />
   </head>
   <body>
     <main class="page-shell">
@@ -181,6 +181,58 @@
           </label>
         </section>
 
+        <section class="section-band" id="aiSelectionSection">
+          <div class="section-title">
+            <span>4</span>
+            <div>
+              <h2>Выбор материалов</h2>
+              <p>Подготовьте выбор статистики, фотографий и отзывов перед сборкой презентации.</p>
+            </div>
+          </div>
+
+          <div class="ai-provider-row" role="radiogroup" aria-label="Провайдер выбора материалов">
+            <label class="radio-chip">
+              <input type="radio" name="aiProvider" value="rules" checked />
+              <span>Правила</span>
+            </label>
+            <label class="radio-chip">
+              <input type="radio" name="aiProvider" value="openai" />
+              <span>OpenAI</span>
+            </label>
+            <label class="radio-chip">
+              <input type="radio" name="aiProvider" value="deepseek" />
+              <span>DeepSeek</span>
+            </label>
+          </div>
+
+          <div class="ai-selection-actions">
+            <button type="button" class="secondary compact" id="prepareAiSelectionBtn">Подготовить выбор</button>
+            <button type="button" class="primary compact" id="approveAiSelectionBtn" disabled>Одобрить выбор</button>
+            <p id="aiSelectionStatus" class="status muted"></p>
+          </div>
+
+          <div id="aiSelectionPanel" class="ai-selection-panel" hidden>
+            <div class="ai-selection-summary">
+              <span id="aiSelectionSource"></span>
+              <p id="aiSelectionRationale"></p>
+            </div>
+            <div class="ai-selection-grid">
+              <section>
+                <h3>Статистика</h3>
+                <div id="aiStatsChoice" class="ai-choice-list"></div>
+              </section>
+              <section>
+                <h3>Фотографии</h3>
+                <div id="aiPhotosChoice" class="ai-choice-list"></div>
+              </section>
+              <section>
+                <h3>Отзывы</h3>
+                <div id="aiReviewsChoice" class="ai-choice-list"></div>
+              </section>
+            </div>
+          </div>
+        </section>
+
         <div class="actions">
           <button type="button" class="secondary" id="buildPresentationBtn">Сформировать презентацию</button>
           <div class="action-status">
@@ -200,6 +252,6 @@
       </form>
     </main>
 
-    <script src="app.js?v=20260528-dadata-collapsible"></script>
+    <script src="app.js?v=20260602-ai-selection"></script>
   </body>
 </html>

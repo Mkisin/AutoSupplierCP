@@ -44,6 +44,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 PRESENTATION_JOBS: dict[str, dict[str, Any]] = {}
 PRESENTATION_JOBS_LOCK = threading.Lock()
+AI_SELECTIONS: dict[str, dict[str, Any]] = {}
+AI_SELECTIONS_LOCK = threading.Lock()
 
 
 def _safe_root_file(path_value: str) -> Path:
@@ -71,9 +73,11 @@ def _get_presentation_job(job_id: str) -> dict[str, Any]:
         return dict(job)
 
 
-def _run_presentation_job(job_id: str, company: str) -> None:
+def _run_presentation_job(job_id: str, company: str, selection: dict[str, Any] | None = None) -> None:
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
+    if selection:
+        env["PRESENTATION_SELECTION_JSON"] = json.dumps(selection, ensure_ascii=False)
     command = [sys.executable, "-X", "utf8", "build_presentation_direct.py", company]
     stdout_path: Path | None = None
     stderr_path: Path | None = None
@@ -959,6 +963,248 @@ def _find_site_inns(website: str) -> list[dict[str, str]]:
     return [{"inn": inn, "sourceUrl": source_url} for inn, source_url in found.items()]
 
 
+def _run_presentation_dry_run(company: str) -> dict[str, Any]:
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    command = [sys.executable, "-X", "utf8", "build_presentation_direct.py", company, "--dry-run"]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=90,
+        )
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or exc.stdout or "Не удалось подготовить выбор материалов").strip()
+        raise HTTPException(status_code=500, detail=details) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="Подготовка выбора материалов заняла слишком много времени") from exc
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Сборщик вернул некорректный JSON dry-run") from exc
+
+
+def _reviews_from_replacements(replacements: dict[str, Any]) -> list[dict[str, str]]:
+    review_keys = [
+        ("{{block6}}", "{{block7}}", "{{block8}}"),
+        ("{{block9}}", "{{block10}}", "{{block11}}"),
+        ("{{block12}}", "{{block13}}", "{{block14}}"),
+    ]
+    reviews = []
+    for company_key, person_key, text_key in review_keys:
+        if replacements.get(company_key) or replacements.get(text_key):
+            reviews.append(
+                {
+                    "company": str(replacements.get(company_key, "")),
+                    "person": str(replacements.get(person_key, "")),
+                    "text": str(replacements.get(text_key, "")),
+                }
+            )
+    return reviews
+
+
+def _default_selection_from_report(report: dict[str, Any], provider: str) -> dict[str, Any]:
+    planned_images = {
+        key: value
+        for key, value in (report.get("planned_images") or {}).items()
+        if key.startswith("{{") and isinstance(value, str)
+    }
+    replacements = dict(report.get("replacements") or {})
+    reviews = _reviews_from_replacements(replacements)
+
+    return {
+        "provider": provider,
+        "source": "rules",
+        "client": report.get("client", ""),
+        "category": report.get("category", ""),
+        "stats": {
+            "source": report.get("stats_source", ""),
+            "category": replacements.get("{{block2}}", report.get("category", "")),
+            "negotiations": replacements.get("{{block3}}", ""),
+            "interest": replacements.get("{{block4}}", ""),
+            "champions": replacements.get("{{block5}}", ""),
+        },
+        "reviews": reviews,
+        "planned_images": planned_images,
+        "replacements": replacements,
+        "rationale": {
+            "summary": "Выбор подготовлен текущими правилами проекта.",
+            "stats": "Статистика выбрана по товарной категории или ближайшему доступному бенчмарку.",
+            "photos": "Фотографии выбраны по каталогу, приоритетам, предпочтительным сетям и универсальности.",
+            "reviews": "Отзывы выбраны по близости категории, типу компании, ценовому сегменту и универсальности.",
+        },
+    }
+
+
+def _ai_provider_settings(provider: str) -> dict[str, str]:
+    normalized = provider.strip().lower()
+    if normalized == "openai":
+        return {
+            "provider": "openai",
+            "api_key": os.environ.get("OPENAI_API_KEY", ""),
+            "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            "model": os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
+        }
+    if normalized == "deepseek":
+        return {
+            "provider": "deepseek",
+            "api_key": os.environ.get("DEEPSEEK_API_KEY", ""),
+            "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+            "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        }
+    return {"provider": "rules", "api_key": "", "base_url": "", "model": ""}
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            raise
+        payload = json.loads(match.group(0))
+    if not isinstance(payload, dict):
+        raise ValueError("AI response must be a JSON object")
+    return payload
+
+
+def _merge_ai_selection(default_selection: dict[str, Any], ai_payload: dict[str, Any]) -> dict[str, Any]:
+    selection = dict(default_selection)
+    selection["source"] = "ai"
+    rationale = dict(default_selection.get("rationale") or {})
+    if isinstance(ai_payload.get("rationale"), dict):
+        rationale.update({key: str(value) for key, value in ai_payload["rationale"].items()})
+    elif ai_payload.get("summary"):
+        rationale["summary"] = str(ai_payload["summary"])
+    selection["rationale"] = rationale
+
+    replacements = ai_payload.get("replacements")
+    if isinstance(replacements, dict):
+        safe_replacements = dict(default_selection.get("replacements") or {})
+        for key, value in replacements.items():
+            if isinstance(key, str) and key.startswith("{{") and key.endswith("}}"):
+                safe_replacements[key] = "" if value is None else str(value)
+        selection["replacements"] = safe_replacements
+        selection["reviews"] = _reviews_from_replacements(safe_replacements)
+
+    planned_images = ai_payload.get("planned_images")
+    if isinstance(planned_images, dict):
+        allowed = default_selection.get("planned_images") or {}
+        safe_images = {}
+        for key, value in planned_images.items():
+            if key in allowed and value in allowed.values():
+                safe_images[key] = value
+        if safe_images:
+            selection["planned_images"] = safe_images
+
+    return selection
+
+
+def _call_ai_selector(provider: str, report: dict[str, Any], default_selection: dict[str, Any]) -> dict[str, Any]:
+    settings = _ai_provider_settings(provider)
+    if settings["provider"] == "rules":
+        return default_selection
+    if not settings["api_key"]:
+        selection = dict(default_selection)
+        selection["source"] = "rules_no_api_key"
+        selection["rationale"] = {
+            **selection.get("rationale", {}),
+            "summary": f"Ключ для {settings['provider']} не задан, использован алгоритмический выбор.",
+        }
+        return selection
+
+    prompt_payload = {
+        "client": report.get("client"),
+        "category": report.get("category"),
+        "stats_source": report.get("stats_source"),
+        "replacements": report.get("replacements"),
+        "planned_images": report.get("planned_images"),
+        "missing_image_sources": report.get("missing_image_sources"),
+        "review_source": report.get("review_source"),
+    }
+    prompt = (
+        "Выбери и проверь материалы для коммерческой презентации. "
+        "Не придумывай новые факты, числа, пути файлов и отзывы. "
+        "Можно использовать только переданные replacements и planned_images. "
+        "Верни только JSON-объект с полями rationale, replacements, planned_images. "
+        "Если текущий выбор хорош, верни его без изменений и объясни почему.\n\n"
+        + json.dumps(prompt_payload, ensure_ascii=False)
+    )
+    body = {
+        "model": settings["model"],
+        "messages": [
+            {
+                "role": "system",
+                "content": "Ты редактор B2B-презентаций. Возвращай только валидный JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+    }
+    url = settings["base_url"].rstrip("/") + "/chat/completions"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {settings['api_key']}",
+            "User-Agent": "AutoSupplierCP",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+        content = response_payload["choices"][0]["message"]["content"]
+        ai_payload = _extract_json_object(content)
+        return _merge_ai_selection(default_selection, ai_payload)
+    except Exception as exc:
+        selection = dict(default_selection)
+        selection["source"] = "rules_ai_error"
+        selection["rationale"] = {
+            **selection.get("rationale", {}),
+            "summary": f"ИИ-провайдер не ответил корректно, использован алгоритмический выбор: {exc}",
+        }
+        return selection
+
+
+def _store_ai_selection(company: str, provider: str, selection: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+    selection_id = uuid.uuid4().hex
+    item = {
+        "id": selection_id,
+        "companyName": company,
+        "provider": provider,
+        "approved": False,
+        "createdAt": datetime.now().isoformat(timespec="seconds"),
+        "selection": selection,
+        "report": report,
+    }
+    with AI_SELECTIONS_LOCK:
+        AI_SELECTIONS[selection_id] = item
+    return dict(item)
+
+
+def _get_ai_selection(selection_id: str, require_approved: bool = False) -> dict[str, Any]:
+    with AI_SELECTIONS_LOCK:
+        item = AI_SELECTIONS.get(selection_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Выбор материалов не найден")
+        if require_approved and not item.get("approved"):
+            raise HTTPException(status_code=400, detail="Сначала одобрите выбор материалов")
+        return dict(item)
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
@@ -1069,6 +1315,47 @@ def dadata_company(payload: dict[str, Any]) -> dict[str, Any]:
     return {"items": details}
 
 
+@app.post("/api/ai-selection")
+def prepare_ai_selection(payload: dict[str, Any]) -> dict[str, Any]:
+    company = str(payload.get("companyName", "")).strip()
+    provider = str(payload.get("provider", "rules")).strip().lower() or "rules"
+    if not company:
+        raise HTTPException(status_code=400, detail="Выберите или заполните компанию")
+    if provider not in {"rules", "openai", "deepseek"}:
+        raise HTTPException(status_code=400, detail="Неизвестный ИИ-провайдер")
+
+    report = _run_presentation_dry_run(company)
+    default_selection = _default_selection_from_report(report, provider)
+    selection = _call_ai_selector(provider, report, default_selection)
+    stored = _store_ai_selection(company, provider, selection, report)
+    return {
+        "id": stored["id"],
+        "approved": stored["approved"],
+        "createdAt": stored["createdAt"],
+        "companyName": stored["companyName"],
+        "provider": stored["provider"],
+        "selection": stored["selection"],
+    }
+
+
+@app.post("/api/ai-selection/{selection_id}/approve")
+def approve_ai_selection(selection_id: str) -> dict[str, Any]:
+    with AI_SELECTIONS_LOCK:
+        item = AI_SELECTIONS.get(selection_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Выбор материалов не найден")
+        item["approved"] = True
+        item["approvedAt"] = datetime.now().isoformat(timespec="seconds")
+        item["updatedAt"] = item["approvedAt"]
+        return {
+            "ok": True,
+            "id": selection_id,
+            "approved": True,
+            "approvedAt": item["approvedAt"],
+            "selection": item["selection"],
+        }
+
+
 @app.post("/api/cards")
 async def save_card(
     payload: str = Form(...),
@@ -1115,19 +1402,31 @@ def update_card_inn(row_number: int, payload: dict[str, Any]) -> dict[str, Any]:
 @app.post("/api/presentations")
 def build_presentation(payload: dict[str, Any]) -> dict[str, Any]:
     company = str(payload.get("companyName", "")).strip()
+    selection_id = str(payload.get("approvedSelectionId", "")).strip()
     if not company:
         raise HTTPException(status_code=400, detail="Выберите или заполните компанию")
+    if not selection_id:
+        raise HTTPException(status_code=400, detail="Сначала подготовьте и одобрите выбор материалов ИИ")
+    selection_item = _get_ai_selection(selection_id, require_approved=True)
+    if str(selection_item.get("companyName", "")).strip() != company:
+        raise HTTPException(status_code=400, detail="Одобренный выбор относится к другой компании")
 
     job_id = uuid.uuid4().hex
     _set_presentation_job(
         job_id,
         id=job_id,
         companyName=company,
+        selectionId=selection_id,
+        selectionProvider=selection_item.get("provider", ""),
         status="queued",
         progress=5,
         message="Задача поставлена в очередь",
     )
-    worker = threading.Thread(target=_run_presentation_job, args=(job_id, company), daemon=True)
+    worker = threading.Thread(
+        target=_run_presentation_job,
+        args=(job_id, company, selection_item.get("selection") or {}),
+        daemon=True,
+    )
     worker.start()
     return _get_presentation_job(job_id)
 

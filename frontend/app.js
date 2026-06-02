@@ -9,6 +9,15 @@ const websiteInput = form.elements.website;
 const existingCompanySelect = document.querySelector("#existingCompanySelect");
 const selectExistingCompany = document.querySelector("#selectExistingCompany");
 const buildPresentationBtn = document.querySelector("#buildPresentationBtn");
+const prepareAiSelectionBtn = document.querySelector("#prepareAiSelectionBtn");
+const approveAiSelectionBtn = document.querySelector("#approveAiSelectionBtn");
+const aiSelectionStatus = document.querySelector("#aiSelectionStatus");
+const aiSelectionPanel = document.querySelector("#aiSelectionPanel");
+const aiSelectionSource = document.querySelector("#aiSelectionSource");
+const aiSelectionRationale = document.querySelector("#aiSelectionRationale");
+const aiStatsChoice = document.querySelector("#aiStatsChoice");
+const aiPhotosChoice = document.querySelector("#aiPhotosChoice");
+const aiReviewsChoice = document.querySelector("#aiReviewsChoice");
 const presentationProgress = document.querySelector("#presentationProgress");
 const presentationProgressText = document.querySelector("#presentationProgressText");
 const presentationProgressPercent = document.querySelector("#presentationProgressPercent");
@@ -23,6 +32,8 @@ const buildPresentationDefaultText = buildPresentationBtn.textContent;
 let existingCards = [];
 let activePresentationJobId = null;
 let activeSearchRequestId = 0;
+let activeAiSelection = null;
+let approvedAiSelectionId = "";
 let dadataExpanded = false;
 
 const optionIds = {
@@ -138,6 +149,136 @@ function setStatus(element, text, isError = false) {
 
 function setSearchLoading(isLoading) {
   searchStatus.classList.toggle("is-loading", isLoading);
+}
+
+function selectedAiProvider() {
+  return form.querySelector("input[name='aiProvider']:checked")?.value || "rules";
+}
+
+function clearAiSelection() {
+  activeAiSelection = null;
+  approvedAiSelectionId = "";
+  approveAiSelectionBtn.disabled = true;
+  aiSelectionPanel.hidden = true;
+  aiSelectionSource.textContent = "";
+  aiSelectionRationale.textContent = "";
+  aiStatsChoice.innerHTML = "";
+  aiPhotosChoice.innerHTML = "";
+  aiReviewsChoice.innerHTML = "";
+  aiSelectionStatus.textContent = "";
+  aiSelectionStatus.classList.remove("error");
+}
+
+function appendChoice(host, title, text) {
+  const item = document.createElement("div");
+  item.className = "ai-choice-item";
+  const strong = document.createElement("strong");
+  strong.textContent = title;
+  const body = document.createElement("span");
+  body.textContent = text || "Нет данных";
+  item.append(strong, body);
+  host.append(item);
+}
+
+function renderAiSelection(payload) {
+  const selection = payload.selection || {};
+  const rationale = selection.rationale || {};
+  activeAiSelection = payload;
+  approvedAiSelectionId = payload.approved ? payload.id : "";
+  approveAiSelectionBtn.disabled = Boolean(payload.approved);
+
+  aiSelectionSource.textContent = `Источник: ${selection.source || payload.provider || "rules"}`;
+  aiSelectionRationale.textContent = rationale.summary || "Выбор подготовлен.";
+
+  aiStatsChoice.innerHTML = "";
+  aiPhotosChoice.innerHTML = "";
+  aiReviewsChoice.innerHTML = "";
+
+  const stats = selection.stats || {};
+  appendChoice(aiStatsChoice, "Категория", stats.category || selection.category || "");
+  appendChoice(aiStatsChoice, "Переговоров", stats.negotiations || "");
+  appendChoice(aiStatsChoice, "Интерес / чемпионы", `${stats.interest || ""}${stats.champions ? ` / ${stats.champions}` : ""}`);
+  if (rationale.stats) {
+    appendChoice(aiStatsChoice, "Почему", rationale.stats);
+  }
+
+  Object.entries(selection.planned_images || {}).forEach(([token, path]) => {
+    appendChoice(aiPhotosChoice, token, path);
+  });
+  if (!aiPhotosChoice.children.length) {
+    appendChoice(aiPhotosChoice, "Фото", "Фотографии не выбраны");
+  }
+  if (rationale.photos) {
+    appendChoice(aiPhotosChoice, "Почему", rationale.photos);
+  }
+
+  (selection.reviews || []).forEach((review, index) => {
+    const name = review.company || `Отзыв ${index + 1}`;
+    const text = [review.person, review.text].filter(Boolean).join(" - ");
+    appendChoice(aiReviewsChoice, name, text);
+  });
+  if (!aiReviewsChoice.children.length) {
+    appendChoice(aiReviewsChoice, "Отзывы", "Отзывы не выбраны");
+  }
+  if (rationale.reviews) {
+    appendChoice(aiReviewsChoice, "Почему", rationale.reviews);
+  }
+
+  aiSelectionPanel.hidden = false;
+}
+
+async function prepareAiSelection() {
+  const company = companyNameInput.value.trim();
+  if (!company) {
+    setStatus(aiSelectionStatus, "Сначала выберите или заполните компанию.", true);
+    return;
+  }
+
+  clearAiSelection();
+  prepareAiSelectionBtn.disabled = true;
+  setStatus(aiSelectionStatus, "Готовлю выбор материалов...");
+  try {
+    const response = await fetch("/api/ai-selection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyName: company, provider: selectedAiProvider() }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Не удалось подготовить выбор материалов");
+    }
+    renderAiSelection(payload);
+    setStatus(aiSelectionStatus, "Проверьте выбор и нажмите «Одобрить выбор».");
+  } catch (error) {
+    setStatus(aiSelectionStatus, error.message, true);
+  } finally {
+    prepareAiSelectionBtn.disabled = false;
+  }
+}
+
+async function approveAiSelection() {
+  if (!activeAiSelection?.id) {
+    setStatus(aiSelectionStatus, "Сначала подготовьте выбор материалов.", true);
+    return;
+  }
+
+  approveAiSelectionBtn.disabled = true;
+  setStatus(aiSelectionStatus, "Одобряю выбор...");
+  try {
+    const response = await fetch(`/api/ai-selection/${encodeURIComponent(activeAiSelection.id)}/approve`, {
+      method: "POST",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Не удалось одобрить выбор");
+    }
+    approvedAiSelectionId = payload.id;
+    activeAiSelection.approved = true;
+    setStatus(aiSelectionStatus, "Выбор одобрен. Можно формировать презентацию.");
+  } catch (error) {
+    approveAiSelectionBtn.disabled = false;
+    setStatus(aiSelectionStatus, error.message, true);
+  }
 }
 
 function clearDadataDetails() {
@@ -328,6 +469,7 @@ function applyExistingCard(rowNumber) {
   }
 
   resetPresentationProgress();
+  clearAiSelection();
   setFormValue("_rowNumber", card._rowNumber);
   setFormValue("companyName", valueBy(card, "Название компании"));
   setFormValue("inn", innBy(card));
@@ -361,6 +503,7 @@ function clearSelectedCompany() {
   setCompanyType("");
   setPreferredNetworks("");
   clearDadataDetails();
+  clearAiSelection();
   saveStatus.textContent = "";
 }
 
@@ -561,6 +704,7 @@ async function saveCard(event) {
     document.querySelector("input[name='country']").value = "Россия";
     resultsBox.innerHTML = "";
     clearDadataDetails();
+    clearAiSelection();
     searchStatus.textContent = "";
     await loadOptions();
     if (wasUpdate) {
@@ -637,10 +781,19 @@ refreshDadataBtn.addEventListener("click", () => {
 toggleDadataBtn.addEventListener("click", () => {
   setDadataExpanded(!dadataExpanded);
 });
+prepareAiSelectionBtn.addEventListener("click", prepareAiSelection);
+approveAiSelectionBtn.addEventListener("click", approveAiSelection);
+form.querySelectorAll("input[name='aiProvider']").forEach((item) => {
+  item.addEventListener("change", clearAiSelection);
+});
 buildPresentationBtn.addEventListener("click", async () => {
   const company = companyNameInput.value.trim();
   if (!company) {
     setStatus(saveStatus, "Сначала выберите или заполните компанию.", true);
+    return;
+  }
+  if (!approvedAiSelectionId) {
+    setStatus(saveStatus, "Сначала подготовьте и одобрите выбор материалов.", true);
     return;
   }
   buildPresentationBtn.disabled = true;
@@ -653,7 +806,7 @@ buildPresentationBtn.addEventListener("click", async () => {
     const response = await fetch("/api/presentations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ companyName: company }),
+      body: JSON.stringify({ companyName: company, approvedSelectionId: approvedAiSelectionId }),
     });
     const payload = await response.json();
     if (!response.ok) {

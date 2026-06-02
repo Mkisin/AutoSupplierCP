@@ -39,7 +39,7 @@ def read_payload(company):
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
-    command = ["python", "build_payload.py"]
+    command = [sys.executable, "build_payload.py"]
     if company:
         command.append(company)
     result = subprocess.check_output(
@@ -49,6 +49,17 @@ def read_payload(company):
         env=env,
     )
     return json.loads(result)
+
+
+def read_selection_override():
+    raw = os.environ.get("PRESENTATION_SELECTION_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def image_ext(path):
@@ -512,6 +523,31 @@ def image_map(payload):
     return mapping, sources
 
 
+def apply_selection_override(replacements, images, image_sources, selection):
+    if not isinstance(selection, dict):
+        return replacements, images, image_sources
+
+    override_replacements = selection.get("replacements")
+    if isinstance(override_replacements, dict):
+        for key, value in override_replacements.items():
+            if isinstance(key, str) and key.startswith("{{") and key.endswith("}}"):
+                replacements[key] = "" if value is None else str(value)
+
+    override_images = selection.get("planned_images")
+    if isinstance(override_images, dict):
+        for token, path_value in override_images.items():
+            if not isinstance(token, str) or not token.startswith("{{"):
+                continue
+            path = Path(str(path_value))
+            if not path.is_absolute():
+                path = Path(".") / path
+            if image_ext(path):
+                images[token] = path
+                image_sources[token] = str(path)
+
+    return replacements, images, image_sources
+
+
 def next_media_name(existing, source):
     ext = image_ext(source) or source.suffix.lower()
     index = 1
@@ -691,6 +727,13 @@ def main():
             index += 1
     replacements = payload["replacements"]
     images, image_sources = image_map(payload)
+    selection_override = read_selection_override()
+    replacements, images, image_sources = apply_selection_override(
+        replacements,
+        images,
+        image_sources,
+        selection_override,
+    )
 
     if args.dry_run:
         print(json.dumps({
