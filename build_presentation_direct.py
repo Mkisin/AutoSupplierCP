@@ -1,4 +1,4 @@
-import json
+﻿import json
 import mimetypes
 import os
 import re
@@ -485,6 +485,121 @@ def choose_network_photos(payload, count):
     return [record["_path"] for record in selected[:count]], report
 
 
+def choose_network_photo_candidates(payload, selected_count, candidate_count=12):
+    records = catalog_records("Каталог фотографий сетей.xlsx")
+    if not records:
+        fallback_pool = first_images("Фотки переговоров", max(selected_count, candidate_count))
+        candidates = []
+        for index, photo in enumerate(fallback_pool[:candidate_count], start=1):
+            candidates.append(
+                {
+                    "id": f"photo-{index}",
+                    "path": str(photo),
+                    "network": "",
+                    "network_type": "",
+                    "goods_groups": "",
+                    "price_segment": "",
+                    "priority": "",
+                    "universality": "",
+                    "score": 0,
+                    "reason": "fallback_no_catalog",
+                }
+            )
+        selected_ids = [item["id"] for item in candidates[:selected_count]]
+        selected_paths = [Path(item["path"]) for item in candidates[:selected_count]]
+        report = {
+            str(index): {"network": "", "score": 0, "reason": "fallback_no_catalog"}
+            for index in range(1, len(selected_paths) + 1)
+        }
+        return selected_paths, report, candidates, selected_ids
+
+    scored = []
+    for index, record in enumerate(records, start=1):
+        score, reason = photo_score(record, payload)
+        priority = number_prefix(record.get("Приоритет"), default=9)
+        scored.append((score, priority, index, record, reason))
+    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+
+    selected_records = []
+    used_networks = set()
+    used_paths = set()
+    for score, priority, index, record, reason in scored:
+        network_key = normalize(record.get("Сеть", ""))
+        path_key = str(record["_path"].resolve()).lower()
+        if network_key and network_key in used_networks:
+            continue
+        if path_key in used_paths:
+            continue
+        selected_records.append((score, record, reason))
+        if network_key:
+            used_networks.add(network_key)
+        used_paths.add(path_key)
+        if len(selected_records) >= selected_count:
+            break
+
+    if len(selected_records) < selected_count:
+        for score, priority, index, record, reason in scored:
+            path_key = str(record["_path"].resolve()).lower()
+            if path_key in used_paths:
+                continue
+            selected_records.append((score, record, reason))
+            used_paths.add(path_key)
+            if len(selected_records) >= selected_count:
+                break
+
+    candidate_records = []
+    candidate_seen = set()
+    for score, priority, index, record, reason in scored:
+        path_key = str(record["_path"].resolve()).lower()
+        if path_key in candidate_seen:
+            continue
+        candidate_records.append((score, record, reason))
+        candidate_seen.add(path_key)
+        if len(candidate_records) >= candidate_count:
+            break
+
+    for item in selected_records:
+        path_key = str(item[1]["_path"].resolve()).lower()
+        if path_key in candidate_seen:
+            continue
+        candidate_records.insert(len(selected_records), item)
+        candidate_seen.add(path_key)
+
+    candidates = []
+    path_to_id = {}
+    for index, (score, record, reason) in enumerate(candidate_records[:candidate_count], start=1):
+        candidate_id = f"photo-{index}"
+        path_to_id[str(record["_path"].resolve()).lower()] = candidate_id
+        candidates.append(
+            {
+                "id": candidate_id,
+                "path": str(record["_path"]),
+                "network": record.get("Сеть", ""),
+                "network_type": record.get("Тип сети", ""),
+                "goods_groups": record.get("Подходит для групп товаров", ""),
+                "price_segment": record.get("Ценовой сегмент", ""),
+                "priority": record.get("Приоритет", ""),
+                "universality": record.get("Уровень универсальности", ""),
+                "score": score,
+                "reason": reason,
+            }
+        )
+
+    selected_paths = [record["_path"] for _, record, _ in selected_records[:selected_count]]
+    selected_ids = []
+    report = {}
+    for offset, (score, record, reason) in enumerate(selected_records[:selected_count], start=1):
+        path_key = str(record["_path"].resolve()).lower()
+        selected_ids.append(path_to_id.get(path_key, ""))
+        report[str(offset)] = {
+            "network": record.get("Сеть", ""),
+            "score": score,
+            "reason": reason,
+        }
+    selected_ids = [item for item in selected_ids if item]
+    return selected_paths, report, candidates, selected_ids
+
+
 def image_map(payload):
     mapping = {}
     sources = {}
@@ -505,7 +620,8 @@ def image_map(payload):
         photo_start = 2
         photo_limit = 6
 
-    photos, photo_report = choose_network_photos(payload, photo_limit)
+    photo_tokens = [f"{{{{pic{index}}}}}" for index in range(photo_start, photo_start + photo_limit)]
+    photos, photo_report, photo_candidates, selected_photo_ids = choose_network_photo_candidates(payload, photo_limit)
     for index, photo in enumerate(photos[:photo_limit], start=photo_start):
         token = f"{{{{pic{index}}}}}"
         mapping[token] = photo
@@ -520,7 +636,7 @@ def image_map(payload):
             token = f"{{{{logo{index}}}}}"
             mapping[token] = logo
             sources[token] = str(logo)
-    return mapping, sources
+    return mapping, sources, photo_candidates, selected_photo_ids, photo_tokens
 
 
 def apply_selection_override(replacements, images, image_sources, selection):
@@ -715,7 +831,7 @@ def main():
 
     template = Path("Шаблон ЦЗС.pptx")
     payload = read_payload(args.company)
-    slug = re.sub(r"[^A-Za-zА-Яа-я0-9]+", "_", payload["company"]).strip("_").lower()
+    slug = re.sub(r"\W+", "_", payload["company"], flags=re.UNICODE).strip("_").lower()
     output = Path(f"{slug}_ЦЗС_переменные.pptx")
     if output.exists():
         index = 2
@@ -726,7 +842,7 @@ def main():
                 break
             index += 1
     replacements = payload["replacements"]
-    images, image_sources = image_map(payload)
+    images, image_sources, photo_candidates, selected_photo_ids, photo_tokens = image_map(payload)
     selection_override = read_selection_override()
     replacements, images, image_sources = apply_selection_override(
         replacements,
@@ -744,6 +860,13 @@ def main():
             "category": payload["category"],
             "stats_source": payload["stats_source"],
             "review_source": payload.get("review_source", {}),
+            "review_candidates": payload.get("review_candidates", []),
+            "selected_review_ids": payload.get("selected_review_ids", []),
+            "required_review_count": payload.get("required_review_count", 3),
+            "photo_candidates": photo_candidates,
+            "selected_photo_ids": selected_photo_ids,
+            "required_photo_count": len(photo_tokens),
+            "photo_tokens": photo_tokens,
             "replacements": replacements,
             "planned_images": image_sources,
             "missing_image_sources": [

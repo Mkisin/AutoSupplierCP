@@ -1,4 +1,4 @@
-const form = document.querySelector("#proposalForm");
+﻿const form = document.querySelector("#proposalForm");
 const saveStatus = document.querySelector("#saveStatus");
 const searchStatus = document.querySelector("#searchStatus");
 const resultsBox = document.querySelector("#companyResults");
@@ -10,6 +10,7 @@ const existingCompanySelect = document.querySelector("#existingCompanySelect");
 const selectExistingCompany = document.querySelector("#selectExistingCompany");
 const buildPresentationBtn = document.querySelector("#buildPresentationBtn");
 const prepareAiSelectionBtn = document.querySelector("#prepareAiSelectionBtn");
+const finalizeAiSelectionBtn = document.querySelector("#finalizeAiSelectionBtn");
 const approveAiSelectionBtn = document.querySelector("#approveAiSelectionBtn");
 const aiSelectionStatus = document.querySelector("#aiSelectionStatus");
 const aiSelectionPanel = document.querySelector("#aiSelectionPanel");
@@ -18,6 +19,14 @@ const aiSelectionRationale = document.querySelector("#aiSelectionRationale");
 const aiStatsChoice = document.querySelector("#aiStatsChoice");
 const aiPhotosChoice = document.querySelector("#aiPhotosChoice");
 const aiReviewsChoice = document.querySelector("#aiReviewsChoice");
+const aiFinalSection = document.querySelector("#aiFinalSection");
+const aiFinalPanel = document.querySelector("#aiFinalPanel");
+const aiFinalSource = document.querySelector("#aiFinalSource");
+const aiFinalRationale = document.querySelector("#aiFinalRationale");
+const aiFinalStats = document.querySelector("#aiFinalStats");
+const aiFinalPhotos = document.querySelector("#aiFinalPhotos");
+const aiFinalReviews = document.querySelector("#aiFinalReviews");
+const approveAiFinalBtn = document.querySelector("#approveAiFinalBtn");
 const presentationProgress = document.querySelector("#presentationProgress");
 const presentationProgressText = document.querySelector("#presentationProgressText");
 const presentationProgressPercent = document.querySelector("#presentationProgressPercent");
@@ -159,12 +168,21 @@ function clearAiSelection() {
   activeAiSelection = null;
   approvedAiSelectionId = "";
   approveAiSelectionBtn.disabled = true;
+  finalizeAiSelectionBtn.disabled = true;
+  approveAiFinalBtn.disabled = true;
   aiSelectionPanel.hidden = true;
+  aiFinalSection.hidden = true;
+  aiFinalPanel.hidden = true;
   aiSelectionSource.textContent = "";
   aiSelectionRationale.textContent = "";
+  aiFinalSource.textContent = "";
+  aiFinalRationale.textContent = "";
   aiStatsChoice.innerHTML = "";
   aiPhotosChoice.innerHTML = "";
   aiReviewsChoice.innerHTML = "";
+  aiFinalStats.innerHTML = "";
+  aiFinalPhotos.innerHTML = "";
+  aiFinalReviews.innerHTML = "";
   aiSelectionStatus.textContent = "";
   aiSelectionStatus.classList.remove("error");
 }
@@ -180,51 +198,188 @@ function appendChoice(host, title, text) {
   host.append(item);
 }
 
+function canFinalizeWithAi() {
+  return ["openai", "deepseek"].includes(selectedAiProvider());
+}
+
+function previewUrlForPath(path) {
+  return `/api/image-preview?path=${encodeURIComponent(path)}`;
+}
+
+function collectManualChoices() {
+  return {
+    photoIds: [...document.querySelectorAll("input[data-ai-photo-id]:checked")].map((input) => input.value),
+    reviewIds: [...document.querySelectorAll("input[data-ai-review-id]:checked")].map((input) => input.value),
+  };
+}
+
+function selectedCounts() {
+  return {
+    photoIds: [...document.querySelectorAll("input[data-ai-photo-id]:checked")].map((input) => input.value),
+    reviewIds: [...document.querySelectorAll("input[data-ai-review-id]:checked")].map((input) => input.value),
+  };
+}
+
+function syncSelectionApprovalState() {
+  if (!activeAiSelection?.selection) {
+    approveAiSelectionBtn.disabled = true;
+    return;
+  }
+  if (activeAiSelection?.approved) {
+    approveAiSelectionBtn.disabled = true;
+    return;
+  }
+  const counts = selectedCounts();
+  const requiredPhotos = Number(activeAiSelection.selection.required_photo_count || 0);
+  const requiredReviews = Number(activeAiSelection.selection.required_review_count || 0);
+  const photosReady = counts.photoIds.length === requiredPhotos;
+  const reviewsReady = counts.reviewIds.length === requiredReviews;
+  approveAiSelectionBtn.disabled = !(photosReady && reviewsReady);
+}
+
+function renderCandidateOptions(host, candidates, kind, requiredCount, selectedIds) {
+  host.innerHTML = "";
+  if (!candidates.length) {
+    appendChoice(host, kind === "photo" ? "Фотографии" : "Отзывы", "Варианты не найдены");
+    return;
+  }
+
+  const header = document.createElement("div");
+  header.className = "ai-option-group";
+  const title = document.createElement("strong");
+  title.className = "ai-option-group-title";
+  title.textContent = kind === "photo"
+    ? `Выберите ${requiredCount} из ${candidates.length} фотографий`
+    : `Выберите ${requiredCount} из ${candidates.length} отзывов`;
+  header.append(title);
+  const caption = document.createElement("span");
+  caption.className = "ai-option-group-caption";
+  caption.textContent = kind === "photo"
+    ? `Сейчас отмечено ${selectedIds.length} из ${requiredCount}`
+    : `Сейчас отмечено ${selectedIds.length} из ${requiredCount}`;
+  header.append(caption);
+  host.append(header);
+
+  candidates.forEach((option, index) => {
+    const label = document.createElement("label");
+    label.className = `ai-option-card${kind === "photo" ? " is-photo" : ""}`;
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = option.id;
+    input.checked = selectedIds.includes(option.id);
+    input.dataset.aiKind = kind;
+    input.dataset.aiLimit = String(requiredCount);
+    if (kind === "photo") {
+      input.dataset.aiPhotoId = option.id;
+    } else {
+      input.dataset.aiReviewId = option.id;
+    }
+
+    if (kind === "photo" && option.path) {
+      const preview = document.createElement("img");
+      preview.className = "ai-option-preview";
+      preview.src = previewUrlForPath(option.path);
+      preview.alt = option.network || `Фото ${index + 1}`;
+      label.append(preview);
+    }
+
+    const body = document.createElement("div");
+    body.className = "ai-option-card-body";
+    const heading = document.createElement("strong");
+    heading.textContent = kind === "photo"
+      ? (option.network || option.path || `Фото ${index + 1}`)
+      : (option.company || `Отзыв ${index + 1}`);
+    const meta = document.createElement("span");
+    meta.textContent = kind === "photo"
+      ? [option.network_type, option.price_segment, option.path].filter(Boolean).join(" · ")
+      : [option.person, option.group, option.text].filter(Boolean).join(" · ");
+    const reason = document.createElement("small");
+    reason.textContent = [option.reason, option.score ? `score ${option.score}` : ""].filter(Boolean).join(" · ");
+    body.append(heading, meta, reason);
+    label.append(input, body);
+    host.append(label);
+  });
+}
+
+function renderStats(selection, host, rationaleText = "") {
+  host.innerHTML = "";
+  const stats = selection.stats || {};
+  appendChoice(host, "Категория", stats.category || selection.category || "");
+  appendChoice(host, "Переговоров", stats.negotiations || "");
+  appendChoice(host, "Интерес / чемпионы", `${stats.interest || ""}${stats.champions ? ` / ${stats.champions}` : ""}`);
+  if (rationaleText) {
+    appendChoice(host, "Почему", rationaleText);
+  }
+}
+
 function renderAiSelection(payload) {
   const selection = payload.selection || {};
   const rationale = selection.rationale || {};
   activeAiSelection = payload;
   approvedAiSelectionId = payload.approved ? payload.id : "";
   approveAiSelectionBtn.disabled = Boolean(payload.approved);
+  finalizeAiSelectionBtn.disabled = !canFinalizeWithAi();
+  approveAiFinalBtn.disabled = !payload.finalSelection;
 
   aiSelectionSource.textContent = `Источник: ${selection.source || payload.provider || "rules"}`;
-  aiSelectionRationale.textContent = rationale.summary || "Выбор подготовлен.";
+  aiSelectionRationale.textContent = rationale.summary || "Алгоритм подготовил предварительный пул материалов.";
 
-  aiStatsChoice.innerHTML = "";
-  aiPhotosChoice.innerHTML = "";
-  aiReviewsChoice.innerHTML = "";
+  renderStats(selection, aiStatsChoice, rationale.stats || "");
+  renderCandidateOptions(
+    aiPhotosChoice,
+    selection.photo_candidates || [],
+    "photo",
+    Number(selection.required_photo_count || 0),
+    selection.selected_photo_ids || [],
+  );
+  renderCandidateOptions(
+    aiReviewsChoice,
+    selection.review_candidates || [],
+    "review",
+    Number(selection.required_review_count || 0),
+    selection.selected_review_ids || [],
+  );
+  aiSelectionPanel.hidden = false;
+  syncSelectionApprovalState();
 
-  const stats = selection.stats || {};
-  appendChoice(aiStatsChoice, "Категория", stats.category || selection.category || "");
-  appendChoice(aiStatsChoice, "Переговоров", stats.negotiations || "");
-  appendChoice(aiStatsChoice, "Интерес / чемпионы", `${stats.interest || ""}${stats.champions ? ` / ${stats.champions}` : ""}`);
-  if (rationale.stats) {
-    appendChoice(aiStatsChoice, "Почему", rationale.stats);
+  if (payload.finalSelection) {
+    renderAiFinalSelection(payload.finalSelection);
   }
+}
 
-  Object.entries(selection.planned_images || {}).forEach(([token, path]) => {
-    appendChoice(aiPhotosChoice, token, path);
+function renderAiFinalSelection(selection) {
+  const rationale = selection?.rationale || {};
+  aiFinalSection.hidden = false;
+  aiFinalPanel.hidden = false;
+  aiFinalSource.textContent = `Источник: ${selection?.source || "ai"}`;
+  aiFinalRationale.textContent = rationale.summary || "ИИ подготовил окончательный выбор.";
+  renderStats(selection || {}, aiFinalStats, rationale.stats || "");
+
+  aiFinalPhotos.innerHTML = "";
+  const photoMap = new Map((selection?.photo_candidates || []).map((item) => [item.id, item]));
+  (selection?.selected_photo_ids || []).forEach((photoId, index) => {
+    const item = photoMap.get(photoId);
+    appendChoice(aiFinalPhotos, item?.network || `Фото ${index + 1}`, item ? [item.network_type, item.price_segment, item.path].filter(Boolean).join(" · ") : photoId);
   });
-  if (!aiPhotosChoice.children.length) {
-    appendChoice(aiPhotosChoice, "Фото", "Фотографии не выбраны");
+  if (!aiFinalPhotos.children.length) {
+    appendChoice(aiFinalPhotos, "Фотографии", "Фотографии не выбраны");
   }
   if (rationale.photos) {
-    appendChoice(aiPhotosChoice, "Почему", rationale.photos);
+    appendChoice(aiFinalPhotos, "Почему", rationale.photos);
   }
 
-  (selection.reviews || []).forEach((review, index) => {
-    const name = review.company || `Отзыв ${index + 1}`;
-    const text = [review.person, review.text].filter(Boolean).join(" - ");
-    appendChoice(aiReviewsChoice, name, text);
+  aiFinalReviews.innerHTML = "";
+  const reviewMap = new Map((selection?.review_candidates || []).map((item) => [item.id, item]));
+  (selection?.selected_review_ids || []).forEach((reviewId, index) => {
+    const review = reviewMap.get(reviewId);
+    appendChoice(aiFinalReviews, review?.company || `Отзыв ${index + 1}`, review ? [review.person, review.text].filter(Boolean).join(" - ") : reviewId);
   });
-  if (!aiReviewsChoice.children.length) {
-    appendChoice(aiReviewsChoice, "Отзывы", "Отзывы не выбраны");
+  if (!aiFinalReviews.children.length) {
+    appendChoice(aiFinalReviews, "Отзывы", "Отзывы не выбраны");
   }
   if (rationale.reviews) {
-    appendChoice(aiReviewsChoice, "Почему", rationale.reviews);
+    appendChoice(aiFinalReviews, "Почему", rationale.reviews);
   }
-
-  aiSelectionPanel.hidden = false;
 }
 
 async function prepareAiSelection() {
@@ -236,7 +391,7 @@ async function prepareAiSelection() {
 
   clearAiSelection();
   prepareAiSelectionBtn.disabled = true;
-  setStatus(aiSelectionStatus, "Готовлю выбор материалов...");
+  setStatus(aiSelectionStatus, "Готовлю список вариантов...");
   try {
     const response = await fetch("/api/ai-selection", {
       method: "POST",
@@ -248,7 +403,9 @@ async function prepareAiSelection() {
       throw new Error(payload.detail || "Не удалось подготовить выбор материалов");
     }
     renderAiSelection(payload);
-    setStatus(aiSelectionStatus, "Проверьте выбор и нажмите «Одобрить выбор».");
+    setStatus(aiSelectionStatus, canFinalizeWithAi()
+      ? "Выберите материалы, затем одобрите выбор или отдайте его ИИ."
+      : "Выберите материалы и одобрите выбор.");
   } catch (error) {
     setStatus(aiSelectionStatus, error.message, true);
   } finally {
@@ -256,17 +413,20 @@ async function prepareAiSelection() {
   }
 }
 
-async function approveAiSelection() {
+async function approveAiSelection(mode = "manual") {
   if (!activeAiSelection?.id) {
     setStatus(aiSelectionStatus, "Сначала подготовьте выбор материалов.", true);
     return;
   }
 
   approveAiSelectionBtn.disabled = true;
-  setStatus(aiSelectionStatus, "Одобряю выбор...");
+  approveAiFinalBtn.disabled = true;
+  setStatus(aiSelectionStatus, mode === "ai" ? "Одобряю ответ ИИ..." : "Одобряю выбор...");
   try {
     const response = await fetch(`/api/ai-selection/${encodeURIComponent(activeAiSelection.id)}/approve`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, ...collectManualChoices() }),
     });
     const payload = await response.json();
     if (!response.ok) {
@@ -274,10 +434,48 @@ async function approveAiSelection() {
     }
     approvedAiSelectionId = payload.id;
     activeAiSelection.approved = true;
+    if (payload.selection) {
+      activeAiSelection.selection = payload.selection;
+    }
     setStatus(aiSelectionStatus, "Выбор одобрен. Можно формировать презентацию.");
   } catch (error) {
-    approveAiSelectionBtn.disabled = false;
     setStatus(aiSelectionStatus, error.message, true);
+  } finally {
+    approveAiSelectionBtn.disabled = Boolean(activeAiSelection?.approved);
+    approveAiFinalBtn.disabled = !activeAiSelection?.finalSelection;
+  }
+}
+
+async function finalizeAiSelection() {
+  if (!activeAiSelection?.id) {
+    setStatus(aiSelectionStatus, "Сначала подготовьте выбор материалов.", true);
+    return;
+  }
+  if (!canFinalizeWithAi()) {
+    setStatus(aiSelectionStatus, "Для ответа ИИ выберите OpenAI или DeepSeek.", true);
+    return;
+  }
+
+  finalizeAiSelectionBtn.disabled = true;
+  setStatus(aiSelectionStatus, "Отдаю варианты ИИ...");
+  try {
+    const response = await fetch(`/api/ai-selection/${encodeURIComponent(activeAiSelection.id)}/finalize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: selectedAiProvider(), ...collectManualChoices() }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Не удалось получить ответ ИИ");
+    }
+    activeAiSelection = payload;
+    renderAiFinalSelection(payload.finalSelection || {});
+    approveAiFinalBtn.disabled = false;
+    setStatus(aiSelectionStatus, "ИИ вернул окончательный вариант. Проверьте его ниже.");
+  } catch (error) {
+    setStatus(aiSelectionStatus, error.message, true);
+  } finally {
+    finalizeAiSelectionBtn.disabled = !canFinalizeWithAi();
   }
 }
 
@@ -378,16 +576,11 @@ function valueBy(card, header) {
 }
 
 function innBy(card) {
-  return valueBy(card, "ИНН") || valueBy(card, "РРќРќ") || valueBy(card, "Р ВР РќР Рќ");
+  return valueBy(card, "ИНН");
 }
 
 function contactNameBy(card) {
-  return (
-    valueBy(card, "ФИО контакта") ||
-    valueBy(card, "Р¤РРћ контакта") ||
-    valueBy(card, "Р¤РРћ РєРѕРЅС‚Р°РєС‚Р°") ||
-    valueBy(card, "Р В¤Р ВР С› РєРѕРЅС‚Р°РєС‚Р°")
-  );
+  return valueBy(card, "ФИО контакта");
 }
 
 function currentRowNumber() {
@@ -782,9 +975,44 @@ toggleDadataBtn.addEventListener("click", () => {
   setDadataExpanded(!dadataExpanded);
 });
 prepareAiSelectionBtn.addEventListener("click", prepareAiSelection);
-approveAiSelectionBtn.addEventListener("click", approveAiSelection);
+finalizeAiSelectionBtn.addEventListener("click", finalizeAiSelection);
+approveAiSelectionBtn.addEventListener("click", () => approveAiSelection("manual"));
+approveAiFinalBtn.addEventListener("click", () => approveAiSelection("ai"));
 form.querySelectorAll("input[name='aiProvider']").forEach((item) => {
   item.addEventListener("change", clearAiSelection);
+});
+aiSelectionPanel.addEventListener("change", (event) => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.type !== "checkbox") {
+    return;
+  }
+  const limit = Number(event.target.dataset.aiLimit || 0);
+  const selector = event.target.dataset.aiKind === "photo" ? "input[data-ai-photo-id]" : "input[data-ai-review-id]";
+  const checked = [...aiSelectionPanel.querySelectorAll(`${selector}:checked`)];
+  if (limit > 0 && checked.length > limit) {
+    event.target.checked = false;
+    setStatus(
+      aiSelectionStatus,
+      event.target.dataset.aiKind === "photo"
+        ? `Можно выбрать только ${limit} фотографий.`
+        : `Можно выбрать только ${limit} отзывов.`,
+      true,
+    );
+    syncSelectionApprovalState();
+    return;
+  }
+  approvedAiSelectionId = "";
+  if (activeAiSelection) {
+    activeAiSelection.approved = false;
+  }
+  syncSelectionApprovalState();
+  const counts = selectedCounts();
+  const requiredPhotos = Number(activeAiSelection?.selection?.required_photo_count || 0);
+  const requiredReviews = Number(activeAiSelection?.selection?.required_review_count || 0);
+  if (counts.photoIds.length === requiredPhotos && counts.reviewIds.length === requiredReviews) {
+    setStatus(aiSelectionStatus, "Выбор изменен. Одобрите его заново.");
+  } else {
+    setStatus(aiSelectionStatus, `Сейчас выбрано фото: ${counts.photoIds.length}/${requiredPhotos}, отзывы: ${counts.reviewIds.length}/${requiredReviews}.`);
+  }
 });
 buildPresentationBtn.addEventListener("click", async () => {
   const company = companyNameInput.value.trim();

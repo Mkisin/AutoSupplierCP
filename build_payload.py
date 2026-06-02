@@ -392,15 +392,25 @@ def review_result(candidate, top_candidates):
     }
 
 
-def choose_reviews(category_value, company_type_value="", price_category_value="", count=1):
-    candidates = review_candidates(category_value, company_type_value, price_category_value)
-    if not candidates:
-        fallback = {
-            "company": "\u0423\u0432\u0435\u043b\u043a\u0430", "person": "", "text": "", "source": "fallback_no_valid_reviews",
-            "score": 0, "reason": "\u0412 \u0444\u0430\u0439\u043b\u0435 \u043e\u0442\u0437\u044b\u0432\u043e\u0432 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e \u0432\u0430\u043b\u0438\u0434\u043d\u044b\u0445 \u0441\u0442\u0440\u043e\u043a.", "top_candidates": []
-        }
-        return [fallback]
+def review_option_payload(candidate):
+    return {
+        "id": f"review-row-{candidate['row']}",
+        "row": candidate["row"],
+        "company": candidate["company"],
+        "person": candidate["person"],
+        "text": candidate["text"],
+        "group": candidate["group"],
+        "company_type": candidate["company_type"],
+        "networks": candidate["networks"],
+        "price_segment": candidate["price_segment"],
+        "universality": candidate["universality"],
+        "score": candidate["score"],
+        "reason": candidate["reason"],
+        "category_matched": candidate["category_matched"],
+    }
 
+
+def select_review_candidates(candidates, count):
     selected = []
     used_companies = set()
     used_networks = set()
@@ -426,6 +436,85 @@ def choose_reviews(category_value, company_type_value="", price_category_value="
         if len(selected) >= count:
             break
 
+    return selected[:count]
+
+
+def choose_review_option_groups(category_value, company_type_value="", price_category_value="", count=3):
+    candidates = review_candidates(category_value, company_type_value, price_category_value)
+    if not candidates:
+        groups = []
+        for slot in range(1, count + 1):
+            fallback = {
+                "id": f"review-fallback-{slot}",
+                "row": 0,
+                "company": "Увелка",
+                "person": "",
+                "text": "",
+                "group": category_value,
+                "company_type": company_type_value,
+                "networks": "",
+                "price_segment": price_category_value,
+                "universality": "",
+                "score": 0,
+                "reason": "В файле отзывов не найдено валидных строк.",
+                "category_matched": False,
+            }
+            groups.append(
+                {
+                    "slot": f"review{slot}",
+                    "label": f"Отзыв {slot}",
+                    "selectedOptionId": fallback["id"],
+                    "options": [fallback],
+                }
+            )
+        return groups
+
+    primaries = select_review_candidates(candidates, count)
+    used_rows = {item["row"] for item in primaries}
+    used_alternates = set()
+    groups = []
+
+    for slot, primary in enumerate(primaries, start=1):
+        options = [review_option_payload(primary)]
+        primary_company = primary["company"].strip().lower()
+        primary_networks = primary["network_tags"]
+        alternate = None
+        phases = [
+            lambda item: item["row"] not in used_rows and item["row"] not in used_alternates and item["company"].strip().lower() != primary_company and not (item["network_tags"] & primary_networks),
+            lambda item: item["row"] not in used_rows and item["row"] not in used_alternates and item["company"].strip().lower() != primary_company,
+            lambda item: item["row"] not in used_rows and item["row"] not in used_alternates,
+            lambda item: item["row"] != primary["row"],
+        ]
+        for phase in phases:
+            alternate = next((item for item in candidates if phase(item)), None)
+            if alternate:
+                break
+        if alternate:
+            used_alternates.add(alternate["row"])
+            options.append(review_option_payload(alternate))
+        groups.append(
+            {
+                "slot": f"review{slot}",
+                "label": f"Отзыв {slot}",
+                "selectedOptionId": options[0]["id"],
+                "options": options,
+            }
+        )
+
+    return groups
+
+
+def choose_reviews(category_value, company_type_value="", price_category_value="", count=1):
+    candidates = review_candidates(category_value, company_type_value, price_category_value)
+    if not candidates:
+        fallback = {
+            "company": "\u0423\u0432\u0435\u043b\u043a\u0430", "person": "", "text": "", "source": "fallback_no_valid_reviews",
+            "score": 0, "reason": "\u0412 \u0444\u0430\u0439\u043b\u0435 \u043e\u0442\u0437\u044b\u0432\u043e\u0432 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e \u0432\u0430\u043b\u0438\u0434\u043d\u044b\u0445 \u0441\u0442\u0440\u043e\u043a.", "top_candidates": []
+        }
+        return [fallback]
+
+    selected = select_review_candidates(candidates, count)
+
     top = [
         {"row": item["row"], "company": item["company"], "group": item["group"], "score": item["score"], "universality": item["universality"], "reason": item["reason"]}
         for item in candidates[:max(3, count)]
@@ -437,10 +526,24 @@ def choose_review(category_value, company_type_value="", price_category_value=""
     return choose_reviews(category_value, company_type_value, price_category_value, count=1)[0]
 
 
+all_review_candidates = review_candidates(category, company_type, price_category)
+selected_review_candidates = select_review_candidates(all_review_candidates, 3)
+review_candidate_pool = []
+seen_review_rows = set()
+for candidate in selected_review_candidates + all_review_candidates:
+    row_number = candidate.get("row")
+    if row_number in seen_review_rows:
+        continue
+    review_candidate_pool.append(review_option_payload(candidate))
+    seen_review_rows.add(row_number)
+    if len(review_candidate_pool) >= 6:
+        break
+
 reviews = choose_reviews(category, company_type, price_category, count=3)
 while len(reviews) < 3:
     reviews.append({"company": "", "person": "", "text": ""})
 review = reviews[0]
+selected_review_ids = [f"review-row-{item['row']}" for item in selected_review_candidates[:3]]
 
 payload = {
     "company": company,
@@ -455,6 +558,9 @@ payload = {
     "client_record": client,
     "review_source": review,
     "review_sources": reviews,
+    "review_candidates": review_candidate_pool,
+    "selected_review_ids": selected_review_ids,
+    "required_review_count": 3,
     "stats_source": stats_source,
     "replacements": {
         "{{block1}}": f"Как компании {company} получить 5-10 контрактов за 2 дня с розничными сетями, проведя 30-40 переговоров",

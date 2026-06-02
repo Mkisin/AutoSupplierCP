@@ -465,7 +465,7 @@ button:hover {
 
 .ai-selection-actions {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-columns: auto auto auto minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   margin-bottom: 16px;
@@ -541,6 +541,80 @@ button:hover {
   margin-bottom: 3px;
   color: var(--ink);
   font-size: 13px;
+}
+
+.ai-option-group {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-option-group-title {
+  color: var(--accent-dark);
+  font-size: 13px;
+}
+
+.ai-option-group-caption {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.ai-option-card {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.ai-option-card.is-photo {
+  grid-template-columns: 18px 88px minmax(0, 1fr);
+}
+
+.ai-option-card input {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+}
+
+.ai-option-preview {
+  width: 88px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #eef3f5;
+}
+
+.ai-option-card-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-option-card-body strong,
+.ai-option-card-body span,
+.ai-option-card-body small {
+  overflow-wrap: anywhere;
+}
+
+.ai-option-card-body strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.ai-option-card-body span,
+.ai-option-card-body small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.ai-final-actions {
+  display: flex;
+  justify-content: flex-start;
 }
 
 .actions {

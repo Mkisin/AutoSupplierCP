@@ -1,10 +1,10 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Параметры КП</title>
-    <link rel="stylesheet" href="styles.css?v=20260602-ai-selection" />
+    <link rel="stylesheet" href="styles.css?v=20260602-selection-pool-2" />
   </head>
   <body>
     <main class="page-shell">
@@ -207,6 +207,7 @@
 
           <div class="ai-selection-actions">
             <button type="button" class="secondary compact" id="prepareAiSelectionBtn">Подготовить выбор</button>
+            <button type="button" class="secondary compact" id="finalizeAiSelectionBtn" disabled>Отдать выбор ИИ</button>
             <button type="button" class="primary compact" id="approveAiSelectionBtn" disabled>Одобрить выбор</button>
             <p id="aiSelectionStatus" class="status muted"></p>
           </div>
@@ -233,6 +234,38 @@
           </div>
         </section>
 
+        <section class="section-band" id="aiFinalSection" hidden>
+          <div class="section-title">
+            <span>5</span>
+            <div>
+              <h2>Окончательный выбор ИИ</h2>
+              <p>Здесь появится финальный комплект материалов после семантического выбора.</p>
+            </div>
+          </div>
+          <div id="aiFinalPanel" class="ai-selection-panel" hidden>
+            <div class="ai-selection-summary">
+              <span id="aiFinalSource"></span>
+              <p id="aiFinalRationale"></p>
+            </div>
+            <div class="ai-selection-grid">
+              <section>
+                <h3>Статистика</h3>
+                <div id="aiFinalStats" class="ai-choice-list"></div>
+              </section>
+              <section>
+                <h3>Фотографии</h3>
+                <div id="aiFinalPhotos" class="ai-choice-list"></div>
+              </section>
+              <section>
+                <h3>Отзывы</h3>
+                <div id="aiFinalReviews" class="ai-choice-list"></div>
+              </section>
+            </div>
+            <div class="ai-final-actions">
+              <button type="button" class="primary compact" id="approveAiFinalBtn" disabled>Одобрить ответ ИИ</button>
+            </div>
+          </div>
+        </section>
         <div class="actions">
           <button type="button" class="secondary" id="buildPresentationBtn">Сформировать презентацию</button>
           <div class="action-status">
@@ -252,6 +285,6 @@
       </form>
     </main>
 
-    <script src="app.js?v=20260602-ai-selection"></script>
+    <script src="app.js?v=20260602-selection-pool-2"></script>
   </body>
 </html>

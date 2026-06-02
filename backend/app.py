@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import mimetypes
@@ -255,7 +255,7 @@ DEFAULT_OPTIONS = {
     "companyTypes": [
         "Производитель конечного товара",
         "Дистрибьютор",
-        "РРјРїРѕСЂС‚РµСЂ",
+        "Импортер",
         "Торговая марка",
         "Фермерское хозяйство",
     ],
@@ -913,7 +913,7 @@ def _dadata_company_from_suggestion(suggestion: dict[str, Any]) -> dict[str, str
         capital_type = str(capital.get("type") or "Уставной капитал")
         capital_text = f"{capital_type}: {_format_money(capital_value)}"
 
-    return {
+    selection = {
         "dadataName": str(name.get("full_with_opf") or suggestion.get("value") or ""),
         "dadataStatus": _status_label(state.get("status")),
         "dadataLegalAddress": str(address.get("unrestricted_value") or address.get("value") or ""),
@@ -1009,6 +1009,100 @@ def _reviews_from_replacements(replacements: dict[str, Any]) -> list[dict[str, s
     return reviews
 
 
+def _candidate_map(items: list[dict[str, Any]], key: str = "id") -> dict[str, dict[str, Any]]:
+    mapped: dict[str, dict[str, Any]] = {}
+    for item in items:
+        item_key = str(item.get(key, "")).strip()
+        if item_key:
+            mapped[item_key] = item
+    return mapped
+
+
+def _normalize_selected_ids(
+    requested_ids: list[str] | None,
+    candidates: list[dict[str, Any]],
+    default_ids: list[str],
+    required_count: int,
+) -> list[str]:
+    valid_ids = {str(item.get("id", "")) for item in candidates if item.get("id")}
+    selected: list[str] = []
+    for item_id in requested_ids or []:
+        normalized = str(item_id).strip()
+        if normalized and normalized in valid_ids and normalized not in selected:
+            selected.append(normalized)
+        if len(selected) >= required_count:
+            break
+    for item_id in default_ids:
+        normalized = str(item_id).strip()
+        if normalized and normalized in valid_ids and normalized not in selected:
+            selected.append(normalized)
+        if len(selected) >= required_count:
+            break
+    return selected[:required_count]
+
+
+def _build_selection_from_choices(
+    base_selection: dict[str, Any],
+    photo_ids: list[str] | None = None,
+    review_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    selection = dict(base_selection)
+    selection["planned_images"] = dict(base_selection.get("planned_images") or {})
+    selection["replacements"] = dict(base_selection.get("replacements") or {})
+    selection["photo_candidates"] = [dict(item) for item in (base_selection.get("photo_candidates") or [])]
+    selection["review_candidates"] = [dict(item) for item in (base_selection.get("review_candidates") or [])]
+
+    photo_candidates = _candidate_map(selection["photo_candidates"])
+    review_candidates = _candidate_map(selection["review_candidates"])
+    photo_tokens = [str(item) for item in (base_selection.get("photo_tokens") or []) if str(item).startswith("{{pic")]
+    required_photo_count = int(base_selection.get("required_photo_count") or len(photo_tokens) or 0)
+    required_review_count = int(base_selection.get("required_review_count") or 3)
+
+    selection["selected_photo_ids"] = _normalize_selected_ids(
+        photo_ids,
+        selection["photo_candidates"],
+        [str(item) for item in (base_selection.get("selected_photo_ids") or [])],
+        required_photo_count,
+    )
+    selection["selected_review_ids"] = _normalize_selected_ids(
+        review_ids,
+        selection["review_candidates"],
+        [str(item) for item in (base_selection.get("selected_review_ids") or [])],
+        required_review_count,
+    )
+
+    for token in photo_tokens:
+        selection["planned_images"].pop(token, None)
+    for token, selected_id in zip(photo_tokens, selection["selected_photo_ids"], strict=False):
+        selected_option = photo_candidates.get(selected_id)
+        if not selected_option:
+            continue
+        selection["planned_images"][token] = str(selected_option.get("path", ""))
+
+    review_tokens = {
+        0: ("{{block6}}", "{{block7}}", "{{block8}}"),
+        1: ("{{block9}}", "{{block10}}", "{{block11}}"),
+        2: ("{{block12}}", "{{block13}}", "{{block14}}"),
+    }
+    for company_key, person_key, text_key in review_tokens.values():
+        selection["replacements"][company_key] = ""
+        selection["replacements"][person_key] = ""
+        selection["replacements"][text_key] = ""
+    for index, selected_id in enumerate(selection["selected_review_ids"]):
+        selected_option = review_candidates.get(selected_id)
+        if not selected_option or index not in review_tokens:
+            continue
+        if not selected_option:
+            continue
+        company_key, person_key, text_key = review_tokens[index]
+        selection["replacements"][company_key] = str(selected_option.get("company", ""))
+        selection["replacements"][person_key] = str(selected_option.get("person", ""))
+        selection["replacements"][text_key] = str(selected_option.get("text", ""))
+
+    selection["reviews"] = _reviews_from_replacements(selection["replacements"])
+    return selection
+
+
 def _default_selection_from_report(report: dict[str, Any], provider: str) -> dict[str, Any]:
     planned_images = {
         key: value
@@ -1018,7 +1112,7 @@ def _default_selection_from_report(report: dict[str, Any], provider: str) -> dic
     replacements = dict(report.get("replacements") or {})
     reviews = _reviews_from_replacements(replacements)
 
-    return {
+    selection = {
         "provider": provider,
         "source": "rules",
         "client": report.get("client", ""),
@@ -1033,6 +1127,13 @@ def _default_selection_from_report(report: dict[str, Any], provider: str) -> dic
         "reviews": reviews,
         "planned_images": planned_images,
         "replacements": replacements,
+        "photo_candidates": report.get("photo_candidates") or [],
+        "review_candidates": report.get("review_candidates") or [],
+        "selected_photo_ids": report.get("selected_photo_ids") or [],
+        "selected_review_ids": report.get("selected_review_ids") or [],
+        "required_photo_count": int(report.get("required_photo_count") or 0),
+        "required_review_count": int(report.get("required_review_count") or 3),
+        "photo_tokens": report.get("photo_tokens") or [],
         "rationale": {
             "summary": "Выбор подготовлен текущими правилами проекта.",
             "stats": "Статистика выбрана по товарной категории или ближайшему доступному бенчмарку.",
@@ -1040,6 +1141,7 @@ def _default_selection_from_report(report: dict[str, Any], provider: str) -> dic
             "reviews": "Отзывы выбраны по близости категории, типу компании, ценовому сегменту и универсальности.",
         },
     }
+    return _build_selection_from_choices(selection)
 
 
 def _ai_provider_settings(provider: str) -> dict[str, str]:
@@ -1079,7 +1181,9 @@ def _extract_json_object(text: str) -> dict[str, Any]:
 
 
 def _merge_ai_selection(default_selection: dict[str, Any], ai_payload: dict[str, Any]) -> dict[str, Any]:
-    selection = dict(default_selection)
+    photo_ids = ai_payload.get("photo_ids") if isinstance(ai_payload.get("photo_ids"), list) else []
+    review_ids = ai_payload.get("review_ids") if isinstance(ai_payload.get("review_ids"), list) else []
+    selection = _build_selection_from_choices(default_selection, photo_ids=photo_ids, review_ids=review_ids)
     selection["source"] = "ai"
     rationale = dict(default_selection.get("rationale") or {})
     if isinstance(ai_payload.get("rationale"), dict):
@@ -1087,26 +1191,6 @@ def _merge_ai_selection(default_selection: dict[str, Any], ai_payload: dict[str,
     elif ai_payload.get("summary"):
         rationale["summary"] = str(ai_payload["summary"])
     selection["rationale"] = rationale
-
-    replacements = ai_payload.get("replacements")
-    if isinstance(replacements, dict):
-        safe_replacements = dict(default_selection.get("replacements") or {})
-        for key, value in replacements.items():
-            if isinstance(key, str) and key.startswith("{{") and key.endswith("}}"):
-                safe_replacements[key] = "" if value is None else str(value)
-        selection["replacements"] = safe_replacements
-        selection["reviews"] = _reviews_from_replacements(safe_replacements)
-
-    planned_images = ai_payload.get("planned_images")
-    if isinstance(planned_images, dict):
-        allowed = default_selection.get("planned_images") or {}
-        safe_images = {}
-        for key, value in planned_images.items():
-            if key in allowed and value in allowed.values():
-                safe_images[key] = value
-        if safe_images:
-            selection["planned_images"] = safe_images
-
     return selection
 
 
@@ -1126,18 +1210,21 @@ def _call_ai_selector(provider: str, report: dict[str, Any], default_selection: 
     prompt_payload = {
         "client": report.get("client"),
         "category": report.get("category"),
-        "stats_source": report.get("stats_source"),
-        "replacements": report.get("replacements"),
-        "planned_images": report.get("planned_images"),
-        "missing_image_sources": report.get("missing_image_sources"),
-        "review_source": report.get("review_source"),
+        "stats": default_selection.get("stats"),
+        "required_photo_count": default_selection.get("required_photo_count"),
+        "required_review_count": default_selection.get("required_review_count"),
+        "photo_candidates": default_selection.get("photo_candidates"),
+        "review_candidates": default_selection.get("review_candidates"),
+        "default_photo_ids": default_selection.get("selected_photo_ids"),
+        "default_review_ids": default_selection.get("selected_review_ids"),
     }
     prompt = (
-        "Выбери и проверь материалы для коммерческой презентации. "
+        "Выбери материалы для коммерческой презентации. "
         "Не придумывай новые факты, числа, пути файлов и отзывы. "
-        "Можно использовать только переданные replacements и planned_images. "
-        "Верни только JSON-объект с полями rationale, replacements, planned_images. "
-        "Если текущий выбор хорош, верни его без изменений и объясни почему.\n\n"
+        "Используй только переданные кандидаты. "
+        "Верни только JSON-объект с полями rationale, photo_ids, review_ids. "
+        "photo_ids должен содержать ровно required_photo_count id, "
+        "review_ids должен содержать ровно required_review_count id.\n\n"
         + json.dumps(prompt_payload, ensure_ascii=False)
     )
     body = {
@@ -1174,9 +1261,98 @@ def _call_ai_selector(provider: str, report: dict[str, Any], default_selection: 
         selection["source"] = "rules_ai_error"
         selection["rationale"] = {
             **selection.get("rationale", {}),
-            "summary": f"ИИ-провайдер не ответил корректно, использован алгоритмический выбор: {exc}",
+            "summary": f"ИИ-провайдер ответил некорректно, использован алгоритмический выбор: {exc}",
         }
         return selection
+
+
+def _current_choice_ids(selection: dict[str, Any]) -> tuple[list[str], list[str]]:
+    return (
+        [str(item) for item in (selection.get("selected_photo_ids") or []) if str(item).strip()],
+        [str(item) for item in (selection.get("selected_review_ids") or []) if str(item).strip()],
+    )
+
+
+def _normalize_choice_payload(payload: dict[str, Any] | None) -> tuple[list[str], list[str]]:
+    body = payload or {}
+    photo_ids = [str(item) for item in (body.get("photoIds") or [])]
+    review_ids = [str(item) for item in (body.get("reviewIds") or [])]
+    return photo_ids, review_ids
+
+
+def _selection_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": item["id"],
+        "approved": bool(item.get("approved")),
+        "createdAt": item.get("createdAt"),
+        "companyName": item.get("companyName", ""),
+        "provider": item.get("provider", "rules"),
+        "selection": item.get("selection"),
+        "finalSelection": item.get("finalSelection"),
+        "approvedSelection": item.get("approvedSelection"),
+    }
+
+
+def _call_ai_final_selector(provider: str, report: dict[str, Any], base_selection: dict[str, Any]) -> dict[str, Any]:
+    settings = _ai_provider_settings(provider)
+    if settings["provider"] == "rules":
+        raise HTTPException(status_code=400, detail="Для ответа ИИ выберите OpenAI или DeepSeek")
+    if not settings["api_key"]:
+        raise HTTPException(status_code=400, detail=f"Не задан ключ для {settings['provider']}")
+
+    current_photo_ids, current_review_ids = _current_choice_ids(base_selection)
+    prompt_payload = {
+        "client": report.get("client"),
+        "category": report.get("category"),
+        "stats": base_selection.get("stats"),
+        "required_photo_count": base_selection.get("required_photo_count"),
+        "required_review_count": base_selection.get("required_review_count"),
+        "photo_candidates": base_selection.get("photo_candidates"),
+        "review_candidates": base_selection.get("review_candidates"),
+        "current_selection": {
+            "photo_ids": current_photo_ids,
+            "review_ids": current_review_ids,
+        },
+    }
+    prompt = (
+        "Выбери лучший комплект материалов для коммерческой презентации. "
+        "Используй только переданные варианты. "
+        "Верни только JSON с полями rationale, photo_ids, review_ids. "
+        "photo_ids должен содержать ровно required_photo_count id, "
+        "review_ids должен содержать ровно required_review_count id. "
+        "Не придумывай новые данные.\n\n"
+        + json.dumps(prompt_payload, ensure_ascii=False)
+    )
+    body = {
+        "model": settings["model"],
+        "messages": [
+            {"role": "system", "content": "Ты редактор B2B-презентаций. Возвращай только валидный JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+    }
+    url = settings["base_url"].rstrip("/") + "/chat/completions"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {settings['api_key']}",
+            "User-Agent": "AutoSupplierCP",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+        content = response_payload["choices"][0]["message"]["content"]
+        ai_payload = _extract_json_object(content)
+        return _merge_ai_selection(base_selection, ai_payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"ИИ-провайдер ответил некорректно: {exc}") from exc
 
 
 def _store_ai_selection(company: str, provider: str, selection: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
@@ -1188,6 +1364,8 @@ def _store_ai_selection(company: str, provider: str, selection: dict[str, Any], 
         "approved": False,
         "createdAt": datetime.now().isoformat(timespec="seconds"),
         "selection": selection,
+        "finalSelection": None,
+        "approvedSelection": None,
         "report": report,
     }
     with AI_SELECTIONS_LOCK:
@@ -1278,7 +1456,7 @@ def company_search(query: str) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail="Не удалось получить данные из открытой базы ФНС. Можно ввести РРќРќ вручную.",
+            detail="Не удалось получить данные из открытой базы ФНС. Можно ввести ИНН вручную.",
         ) from exc
 
     items = []
@@ -1326,24 +1504,30 @@ def prepare_ai_selection(payload: dict[str, Any]) -> dict[str, Any]:
 
     report = _run_presentation_dry_run(company)
     default_selection = _default_selection_from_report(report, provider)
-    selection = _call_ai_selector(provider, report, default_selection)
-    stored = _store_ai_selection(company, provider, selection, report)
-    return {
-        "id": stored["id"],
-        "approved": stored["approved"],
-        "createdAt": stored["createdAt"],
-        "companyName": stored["companyName"],
-        "provider": stored["provider"],
-        "selection": stored["selection"],
-    }
+    stored = _store_ai_selection(company, provider, default_selection, report)
+    return _selection_snapshot(stored)
 
 
 @app.post("/api/ai-selection/{selection_id}/approve")
-def approve_ai_selection(selection_id: str) -> dict[str, Any]:
+def approve_ai_selection(selection_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    photo_ids, review_ids = _normalize_choice_payload(payload)
+    mode = str((payload or {}).get("mode", "manual")).strip().lower()
     with AI_SELECTIONS_LOCK:
         item = AI_SELECTIONS.get(selection_id)
         if not item:
             raise HTTPException(status_code=404, detail="Выбор материалов не найден")
+        if mode == "ai":
+            if not item.get("finalSelection"):
+                raise HTTPException(status_code=400, detail="Сначала получите окончательный выбор ИИ")
+            approved_selection = dict(item["finalSelection"])
+        else:
+            approved_selection = _build_selection_from_choices(
+                item.get("selection") or {},
+                photo_ids=photo_ids,
+                review_ids=review_ids,
+            )
+        item["selection"] = approved_selection
+        item["approvedSelection"] = approved_selection
         item["approved"] = True
         item["approvedAt"] = datetime.now().isoformat(timespec="seconds")
         item["updatedAt"] = item["approvedAt"]
@@ -1353,7 +1537,35 @@ def approve_ai_selection(selection_id: str) -> dict[str, Any]:
             "approved": True,
             "approvedAt": item["approvedAt"],
             "selection": item["selection"],
+            "finalSelection": item.get("finalSelection"),
         }
+
+
+@app.post("/api/ai-selection/{selection_id}/finalize")
+def finalize_ai_selection(selection_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    provider = str((payload or {}).get("provider", "")).strip().lower()
+    photo_ids, review_ids = _normalize_choice_payload(payload)
+    with AI_SELECTIONS_LOCK:
+        item = AI_SELECTIONS.get(selection_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Выбор материалов не найден")
+        base_selection = _build_selection_from_choices(
+            item.get("selection") or {},
+            photo_ids=photo_ids,
+            review_ids=review_ids,
+        )
+        chosen_provider = provider or str(item.get("provider", "rules")).strip().lower() or "rules"
+        report = dict(item.get("report") or {})
+    final_selection = _call_ai_final_selector(chosen_provider, report, base_selection)
+    with AI_SELECTIONS_LOCK:
+        item = AI_SELECTIONS.get(selection_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Выбор материалов не найден")
+        item["provider"] = chosen_provider
+        item["selection"] = base_selection
+        item["finalSelection"] = final_selection
+        item["updatedAt"] = datetime.now().isoformat(timespec="seconds")
+        return _selection_snapshot(item)
 
 
 @app.post("/api/cards")
@@ -1453,5 +1665,14 @@ def photo(filename: str) -> FileResponse:
     target = PHOTO_DIR / filename
     if not target.exists():
         raise HTTPException(status_code=404, detail="Фото не найдено")
+    media_type = mimetypes.guess_type(target.name)[0]
+    return FileResponse(target, media_type=media_type)
+
+
+@app.get("/api/image-preview")
+def image_preview(path: str) -> FileResponse:
+    target = _safe_root_file(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Изображение не найдено")
     media_type = mimetypes.guess_type(target.name)[0]
     return FileResponse(target, media_type=media_type)
