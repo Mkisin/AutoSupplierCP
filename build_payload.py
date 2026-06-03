@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import statistics
 import sys
@@ -119,6 +120,15 @@ def contact_priority(record):
 
 
 client = sorted(client_candidates, key=contact_priority)[0]
+
+payload_override_raw = os.environ.get("PAYLOAD_OVERRIDE_JSON", "").strip()
+if payload_override_raw:
+    try:
+        payload_override = json.loads(payload_override_raw)
+    except json.JSONDecodeError:
+        payload_override = {}
+    if isinstance(payload_override, dict):
+        client = {**client, **{str(key): str(value) for key, value in payload_override.items()}}
 
 company = client.get("Название компании", "").strip()
 contact = client.get("ФИО контакта", "").strip()

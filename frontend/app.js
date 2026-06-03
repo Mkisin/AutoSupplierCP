@@ -146,6 +146,17 @@ function fillPreferredNetworkCategories(values) {
   values.forEach((value) => {
     const label = document.createElement("label");
     label.className = "chip";
+    label.innerHTML = `<input type="checkbox" name="preferredNetworkCategories" value="${value}"><span>${value}</span>`;
+    host.append(label);
+  });
+}
+
+function fillPreferredNetworks(values) {
+  const host = document.querySelector("#preferredNetworks");
+  host.innerHTML = "";
+  values.forEach((value) => {
+    const label = document.createElement("label");
+    label.className = "chip";
     label.innerHTML = `<input type="checkbox" name="preferredNetworks" value="${value}"><span>${value}</span>`;
     host.append(label);
   });
@@ -291,7 +302,7 @@ function renderCandidateOptions(host, candidates, kind, requiredCount, selectedI
       : (option.company || `Отзыв ${index + 1}`);
     const meta = document.createElement("span");
     meta.textContent = kind === "photo"
-      ? [option.network_type, option.price_segment, option.path].filter(Boolean).join(" · ")
+      ? [option.network_type, option.region, option.price_segment, option.path].filter(Boolean).join(" · ")
       : [option.person, option.group, option.text].filter(Boolean).join(" · ");
     const reason = document.createElement("small");
     reason.textContent = [option.reason, option.score ? `score ${option.score}` : ""].filter(Boolean).join(" · ");
@@ -359,7 +370,7 @@ function renderAiFinalSelection(selection) {
   const photoMap = new Map((selection?.photo_candidates || []).map((item) => [item.id, item]));
   (selection?.selected_photo_ids || []).forEach((photoId, index) => {
     const item = photoMap.get(photoId);
-    appendChoice(aiFinalPhotos, item?.network || `Фото ${index + 1}`, item ? [item.network_type, item.price_segment, item.path].filter(Boolean).join(" · ") : photoId);
+    appendChoice(aiFinalPhotos, item?.network || `Фото ${index + 1}`, item ? [item.network_type, item.region, item.price_segment, item.path].filter(Boolean).join(" · ") : photoId);
   });
   if (!aiFinalPhotos.children.length) {
     appendChoice(aiFinalPhotos, "Фотографии", "Фотографии не выбраны");
@@ -396,7 +407,7 @@ async function prepareAiSelection() {
     const response = await fetch("/api/ai-selection", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ companyName: company, provider: selectedAiProvider() }),
+      body: JSON.stringify({ companyName: company, provider: selectedAiProvider(), draftPayload: formPayload() }),
     });
     const payload = await response.json();
     if (!response.ok) {
@@ -648,6 +659,13 @@ function setCompanyType(value) {
   syncCompanyType();
 }
 
+function setPreferredNetworkCategories(value) {
+  const selected = new Set((value || "").split(",").map((item) => item.trim()).filter(Boolean));
+  form.querySelectorAll("input[name='preferredNetworkCategories']").forEach((checkbox) => {
+    checkbox.checked = selected.has(checkbox.value);
+  });
+}
+
 function setPreferredNetworks(value) {
   const selected = new Set((value || "").split(",").map((item) => item.trim()).filter(Boolean));
   form.querySelectorAll("input[name='preferredNetworks']").forEach((checkbox) => {
@@ -679,6 +697,7 @@ function applyExistingCard(rowNumber) {
   setFormValue("productCategory", valueBy(card, "Категория товара"));
   setFormValue("priceCategory", valueBy(card, "Ценовая категория"));
   setFormValue("productDescription", valueBy(card, "Краткое описание продукции"));
+  setPreferredNetworkCategories(valueBy(card, "Предпочтительные категории сетей") || valueBy(card, "Предпочтительные сети"));
   setPreferredNetworks(valueBy(card, "Предпочтительные сети"));
   setStatus(saveStatus, `Редактируется строка ${card._rowNumber}: ${valueBy(card, "Название компании")}`);
   renderDadataDetails(dadataDetailsFromCard(card));
@@ -694,6 +713,7 @@ function clearSelectedCompany() {
   document.querySelector("#rowNumber").value = "";
   document.querySelector("input[name='country']").value = "Россия";
   setCompanyType("");
+  setPreferredNetworkCategories("");
   setPreferredNetworks("");
   clearDadataDetails();
   clearAiSelection();
@@ -722,6 +742,7 @@ async function loadOptions() {
   fillSelect("priceCategory", options.priceCategories || []);
   fillSelect("networkWorkCategory", options.networkWorkCategories || []);
   fillPreferredNetworkCategories(options.preferredNetworkCategories || []);
+  fillPreferredNetworks(options.preferredNetworks || []);
   document.querySelector("#savedCount").textContent = options.cardCount || 0;
   await loadExistingCards();
 }
@@ -865,6 +886,9 @@ async function searchCompany(options = {}) {
 
 function formPayload() {
   const data = Object.fromEntries(new FormData(form).entries());
+  data.preferredNetworkCategories = [...form.querySelectorAll("input[name='preferredNetworkCategories']:checked")]
+    .map((item) => item.value)
+    .join(", ");
   data.preferredNetworks = [...form.querySelectorAll("input[name='preferredNetworks']:checked")]
     .map((item) => item.value)
     .join(", ");

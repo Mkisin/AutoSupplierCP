@@ -396,6 +396,13 @@ button:hover {
   gap: 10px;
 }
 
+.network-chip-grid {
+  max-height: 260px;
+  overflow: auto;
+  align-content: start;
+  padding-right: 4px;
+}
+
 .chip {
   position: relative;
   min-height: 48px;

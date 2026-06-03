@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Параметры КП</title>
-    <link rel="stylesheet" href="styles.css?v=20260602-selection-pool-2" />
+    <link rel="stylesheet" href="styles.css?v=20260603-preferred-networks-v2" />
   </head>
   <body>
     <main class="page-shell">
@@ -172,13 +172,19 @@
             <span>3</span>
             <div>
               <h2>Работа с сетями</h2>
-              <p>Выберите предпочтительные категории сетей для подготовки КП.</p>
+              <p>Выберите категории и конкретные сети для подготовки КП.</p>
             </div>
           </div>
-          <label>
-            <span>Предпочтительные категории сетей</span>
-            <div id="preferredNetworkCategories" class="chip-grid"></div>
-          </label>
+          <div class="field-row two">
+            <label>
+              <span>Предпочтительные категории сетей</span>
+              <div id="preferredNetworkCategories" class="chip-grid"></div>
+            </label>
+            <label>
+              <span>Предпочтительные сети</span>
+              <div id="preferredNetworks" class="chip-grid network-chip-grid"></div>
+            </label>
+          </div>
         </section>
 
         <section class="section-band" id="aiSelectionSection">
@@ -285,6 +291,6 @@
       </form>
     </main>
 
-    <script src="app.js?v=20260602-selection-pool-2"></script>
+    <script src="app.js?v=20260603-preferred-networks-v2"></script>
   </body>
 </html>

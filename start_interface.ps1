@@ -42,11 +42,13 @@ function Stop-StaleProjectServer([int]$TargetPort) {
     $processPath = ""
   }
 
+  $pythonNames = @("python", "pythonw", "py")
   $isProjectPython = $process.ProcessName -ieq "python" -and $processPath -like "$root*"
   $isVenvPython = $processPath -ieq $python
+  $isAnyPython = $pythonNames -contains $process.ProcessName.ToLowerInvariant()
 
-  if (-not ($isProjectPython -or $isVenvPython)) {
-    throw "Port $TargetPort is already used by $($process.ProcessName) (PID $listenerPid). The script will not stop a non-project process automatically."
+  if (-not ($isProjectPython -or $isVenvPython -or $isAnyPython)) {
+    throw "Port $TargetPort is already used by $($process.ProcessName) (PID $listenerPid). The script will not stop a non-Python process automatically."
   }
 
   Write-Host "Freeing port ${TargetPort}; stopping stale process PID $listenerPid..." -ForegroundColor Yellow

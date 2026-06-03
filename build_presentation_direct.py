@@ -354,6 +354,25 @@ def split_tags(value):
     }
 
 
+def preferred_network_matches(record, preferred_networks):
+    network_name = str(record.get("Сеть", ""))
+    if not network_name or not preferred_networks:
+        return False
+    normalized_name = normalize(network_name)
+    preferred_normalized = {normalize(item) for item in preferred_networks if normalize(item)}
+    if normalized_name in preferred_normalized:
+        return True
+    network_words = words(network_name)
+    return any(
+        normalized_item in normalized_name
+        or normalized_name in normalized_item
+        or bool(network_words & words(item))
+        for item in preferred_networks
+        for normalized_item in [normalize(item)]
+        if normalized_item
+    )
+
+
 def number_prefix(value, default=9):
     match = re.match(r"\s*(\d+)", str(value or ""))
     return int(match.group(1)) if match else default
@@ -361,7 +380,7 @@ def number_prefix(value, default=9):
 
 def catalog_records(path):
     sheets = read_xlsx(path)
-    rows = next(iter(sheets.values()), [])
+    rows = sheets.get("Сети") or next(iter(sheets.values()), [])
     if len(rows) <= 1:
         return []
     headers = [str(value).strip() for value in rows[0]]
@@ -389,6 +408,8 @@ def photo_score(record, payload):
         str(record.get("Подходит для групп товаров", "")),
         str(record.get("Комментарий", "")),
         str(record.get("Тип сети", "")),
+        str(record.get("Регион", "")),
+        str(record.get("Сеть", "")),
     ])
     overlap = category_words & words(searchable)
     if overlap:
@@ -396,11 +417,7 @@ def photo_score(record, payload):
         reasons.append("категория")
 
     preferred = split_tags(payload.get("preferred_networks", ""))
-    network_name = str(record.get("Сеть", ""))
-    if preferred and (
-        normalize(network_name) in {normalize(item) for item in preferred}
-        or words(network_name) & words(" ".join(preferred))
-    ):
+    if preferred_network_matches(record, preferred):
         score += 70
         reasons.append("предпочтительная сеть")
 
@@ -427,6 +444,27 @@ def photo_score(record, payload):
     return score, "; ".join(reasons) or "fallback"
 
 
+def prioritized_photo_records(scored, preferred_networks):
+    prioritized = []
+    selected_paths = set()
+    selected_networks = set()
+
+    for score, priority, index, record, reason in scored:
+        if not preferred_network_matches(record, preferred_networks):
+            continue
+        path_key = str(record["_path"].resolve()).lower()
+        network_key = normalize(record.get("Сеть", ""))
+        if path_key in selected_paths:
+            continue
+        if network_key and network_key in selected_networks:
+            continue
+        prioritized.append((score, priority, index, record, reason))
+        selected_paths.add(path_key)
+        if network_key:
+            selected_networks.add(network_key)
+    return prioritized
+
+
 def choose_network_photos(payload, count):
     records = catalog_records("Каталог фотографий сетей.xlsx")
     if not records:
@@ -443,6 +481,17 @@ def choose_network_photos(payload, count):
     selected = []
     used_networks = set()
     used_paths = set()
+    preferred = split_tags(payload.get("preferred_networks", ""))
+    for score, priority, index, record, reason in prioritized_photo_records(scored, preferred):
+        network_key = normalize(record.get("Сеть", ""))
+        path_key = str(record["_path"].resolve()).lower()
+        selected.append(record)
+        if network_key:
+            used_networks.add(network_key)
+        used_paths.add(path_key)
+        if len(selected) >= count:
+            break
+
     for score, priority, index, record, reason in scored:
         network_key = normalize(record.get("Сеть", ""))
         path_key = str(record["_path"].resolve()).lower()
@@ -496,10 +545,11 @@ def choose_network_photo_candidates(payload, selected_count, candidate_count=12)
                     "id": f"photo-{index}",
                     "path": str(photo),
                     "network": "",
-                    "network_type": "",
-                    "goods_groups": "",
-                    "price_segment": "",
-                    "priority": "",
+                "network_type": "",
+                "region": "",
+                "goods_groups": "",
+                "price_segment": "",
+                "priority": "",
                     "universality": "",
                     "score": 0,
                     "reason": "fallback_no_catalog",
@@ -523,6 +573,19 @@ def choose_network_photo_candidates(payload, selected_count, candidate_count=12)
     selected_records = []
     used_networks = set()
     used_paths = set()
+    preferred = split_tags(payload.get("preferred_networks", ""))
+    prioritized = prioritized_photo_records(scored, preferred)
+
+    for score, priority, index, record, reason in prioritized:
+        network_key = normalize(record.get("Сеть", ""))
+        path_key = str(record["_path"].resolve()).lower()
+        selected_records.append((score, record, reason))
+        if network_key:
+            used_networks.add(network_key)
+        used_paths.add(path_key)
+        if len(selected_records) >= selected_count:
+            break
+
     for score, priority, index, record, reason in scored:
         network_key = normalize(record.get("Сеть", ""))
         path_key = str(record["_path"].resolve()).lower()
@@ -549,6 +612,15 @@ def choose_network_photo_candidates(payload, selected_count, candidate_count=12)
 
     candidate_records = []
     candidate_seen = set()
+    for score, priority, index, record, reason in prioritized:
+        path_key = str(record["_path"].resolve()).lower()
+        if path_key in candidate_seen:
+            continue
+        candidate_records.append((score, record, reason))
+        candidate_seen.add(path_key)
+        if len(candidate_records) >= candidate_count:
+            break
+
     for score, priority, index, record, reason in scored:
         path_key = str(record["_path"].resolve()).lower()
         if path_key in candidate_seen:
@@ -576,6 +648,7 @@ def choose_network_photo_candidates(payload, selected_count, candidate_count=12)
                 "path": str(record["_path"]),
                 "network": record.get("Сеть", ""),
                 "network_type": record.get("Тип сети", ""),
+                "region": record.get("Регион", ""),
                 "goods_groups": record.get("Подходит для групп товаров", ""),
                 "price_segment": record.get("Ценовой сегмент", ""),
                 "priority": record.get("Приоритет", ""),
@@ -639,6 +712,27 @@ def image_map(payload):
     return mapping, sources, photo_candidates, selected_photo_ids, photo_tokens
 
 
+def review_logo_mapping_from_replacements(replacements):
+    mapping = {}
+    sources = {}
+    review_company_tokens = {
+        1: "{{block6}}",
+        2: "{{block9}}",
+        3: "{{block12}}",
+    }
+    for index, company_token in review_company_tokens.items():
+        company = str(replacements.get(company_token, "")).strip()
+        logo_token = f"{{{{logo{index}}}}}"
+        if not company:
+            continue
+        logo = best_image("Логотипы поставщиков", logo_needles(company))
+        if not logo:
+            continue
+        mapping[logo_token] = logo
+        sources[logo_token] = str(logo)
+    return mapping, sources
+
+
 def apply_selection_override(replacements, images, image_sources, selection):
     if not isinstance(selection, dict):
         return replacements, images, image_sources
@@ -660,6 +754,14 @@ def apply_selection_override(replacements, images, image_sources, selection):
             if image_ext(path):
                 images[token] = path
                 image_sources[token] = str(path)
+
+    # Review logos must always follow the actual companies selected for the review blocks.
+    for token in ("{{logo1}}", "{{logo2}}", "{{logo3}}"):
+        images.pop(token, None)
+        image_sources.pop(token, None)
+    logo_mapping, logo_sources = review_logo_mapping_from_replacements(replacements)
+    images.update(logo_mapping)
+    image_sources.update(logo_sources)
 
     return replacements, images, image_sources
 

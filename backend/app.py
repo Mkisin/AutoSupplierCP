@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_FILE = ROOT / "Данные для разработки.xlsx"
+PHOTO_CATALOG_FILE = ROOT / "Каталог фотографий сетей.xlsx"
 PHOTO_DIR = ROOT / "Фото товаров"
 STATIC_DIR = ROOT / "frontend"
 DADATA_API_KEY = os.environ.get("DADATA_API_KEY", "e827de6169ff2dd15ed29a07d4489511b80d1463")
@@ -181,6 +182,7 @@ HEADERS = [
     "Город",
     "Название товара",
     "Категория по работе с сетями",
+    "Предпочтительные категории сетей",
     "Предпочтительные сети",
     "Ценовая категория",
     "Фото товара",
@@ -213,6 +215,7 @@ FIELD_TO_HEADER = {
     "industry": "Отрасль",
     "activity": "Сфера деятельности",
     "networkCategories": "Категория по работе с сетями",
+    "preferredNetworkCategories": "Предпочтительные категории сетей",
     "website": "Сайт ",
     "country": "Страна ",
     "city": "Город",
@@ -659,6 +662,67 @@ def _read_cards() -> list[dict[str, str]]:
     return cards
 
 
+def _read_sheet_rows(xlsx_path: Path, preferred_sheet_name: str | None = None) -> list[list[str]]:
+    if not xlsx_path.exists():
+        return []
+    with zipfile.ZipFile(xlsx_path, "r") as source:
+        parts = {name: source.read(name) for name in source.namelist()}
+    shared = _shared_strings(parts)
+
+    sheet_path = ""
+    if preferred_sheet_name:
+        try:
+            sheet_path = _sheet_target(parts, preferred_sheet_name)
+        except HTTPException:
+            sheet_path = ""
+    if not sheet_path:
+        workbook = ET.fromstring(parts["xl/workbook.xml"])
+        rels = ET.fromstring(parts["xl/_rels/workbook.xml.rels"])
+        rel_map = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels}
+        ns = {"m": MAIN_NS, "r": REL_NS}
+        first_sheet = next(iter(workbook.find("m:sheets", ns) or []), None)
+        if first_sheet is None:
+            return []
+        rid = first_sheet.attrib[f"{{{REL_NS}}}id"]
+        sheet_path = "xl/" + rel_map[rid].lstrip("/")
+
+    root = ET.fromstring(parts[sheet_path])
+    ns = f"{{{MAIN_NS}}}"
+    rows: list[list[str]] = []
+    for row in root.findall(f".//{ns}row"):
+        values_by_col = _row_values(row, shared)
+        if not values_by_col:
+            continue
+        max_index = max(_col_to_number(col) for col in values_by_col)
+        ordered = [""] * (max_index + 1)
+        for col, value in values_by_col.items():
+            ordered[_col_to_number(col)] = value
+        if any(str(value).strip() for value in ordered):
+            rows.append(ordered)
+    return rows
+
+
+def _preferred_network_names() -> list[str]:
+    rows = _read_sheet_rows(PHOTO_CATALOG_FILE, "Сети")
+    if len(rows) <= 1:
+        return []
+    headers = [str(value).strip() for value in rows[0]]
+    if "Сеть" not in headers:
+        return []
+    network_index = headers.index("Сеть")
+    result: list[str] = []
+    seen: set[str] = set()
+    for row in rows[1:]:
+        if network_index >= len(row):
+            continue
+        name = str(row[network_index]).strip()
+        key = name.casefold()
+        if name and key not in seen:
+            result.append(name)
+            seen.add(key)
+    return result
+
+
 def _unique(values: list[str], fallback: list[str]) -> list[str]:
     result = []
     for value in fallback + values:
@@ -966,6 +1030,48 @@ def _find_site_inns(website: str) -> list[dict[str, str]]:
 def _run_presentation_dry_run(company: str) -> dict[str, Any]:
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
+    command = [sys.executable, "-X", "utf8", "build_presentation_direct.py", company, "--dry-run"]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=90,
+        )
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or exc.stdout or "Не удалось подготовить выбор материалов").strip()
+        raise HTTPException(status_code=500, detail=details) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="Подготовка выбора материалов заняла слишком много времени") from exc
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Сборщик вернул некорректный JSON dry-run") from exc
+
+
+def _payload_override_from_form(form_payload: dict[str, Any] | None) -> dict[str, str]:
+    source = form_payload or {}
+    result: dict[str, str] = {}
+    for key, value in source.items():
+        if key not in FIELD_TO_HEADER:
+            continue
+        normalized = str(value or "").strip()
+        if normalized:
+            result[FIELD_TO_HEADER[key]] = normalized
+    return result
+
+
+def _run_presentation_dry_run_with_override(company: str, form_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    payload_override = _payload_override_from_form(form_payload)
+    if payload_override:
+        env["PAYLOAD_OVERRIDE_JSON"] = json.dumps(payload_override, ensure_ascii=False)
     command = [sys.executable, "-X", "utf8", "build_presentation_direct.py", company, "--dry-run"]
     try:
         result = subprocess.run(
@@ -1401,6 +1507,7 @@ def frontend_script() -> FileResponse:
 @app.get("/api/options")
 def options() -> dict[str, Any]:
     cards = _read_cards()
+    preferred_networks = _preferred_network_names()
     return {
         "companyTypes": _unique([c.get("Тип компании", "") for c in cards], DEFAULT_OPTIONS["companyTypes"]),
         "industries": _unique([c.get("Отрасль", "") for c in cards], DEFAULT_OPTIONS["industries"]),
@@ -1408,6 +1515,7 @@ def options() -> dict[str, Any]:
         "productCategories": _unique([c.get("Категория товара", "") for c in cards], DEFAULT_OPTIONS["productCategories"]),
         "networkWorkCategories": DEFAULT_OPTIONS["networkWorkCategories"],
         "preferredNetworkCategories": DEFAULT_OPTIONS["preferredNetworkCategories"],
+        "preferredNetworks": preferred_networks,
         "priceCategories": DEFAULT_OPTIONS["priceCategories"],
         "cardCount": len(cards),
         "recentCards": cards[-6:],
@@ -1497,12 +1605,13 @@ def dadata_company(payload: dict[str, Any]) -> dict[str, Any]:
 def prepare_ai_selection(payload: dict[str, Any]) -> dict[str, Any]:
     company = str(payload.get("companyName", "")).strip()
     provider = str(payload.get("provider", "rules")).strip().lower() or "rules"
+    draft_payload = payload.get("draftPayload") if isinstance(payload.get("draftPayload"), dict) else {}
     if not company:
         raise HTTPException(status_code=400, detail="Выберите или заполните компанию")
     if provider not in {"rules", "openai", "deepseek"}:
         raise HTTPException(status_code=400, detail="Неизвестный ИИ-провайдер")
 
-    report = _run_presentation_dry_run(company)
+    report = _run_presentation_dry_run_with_override(company, draft_payload)
     default_selection = _default_selection_from_report(report, provider)
     stored = _store_ai_selection(company, provider, default_selection, report)
     return _selection_snapshot(stored)
