@@ -54,6 +54,7 @@ let approvedAiSelectionId = "";
 let aiRequestStartedAt = 0;
 let aiThinkingInterval = null;
 let dadataExpanded = false;
+const sessionAiKeys = {};
 
 const optionIds = {
   industries: "industries",
@@ -183,6 +184,33 @@ function setSearchLoading(isLoading) {
 
 function selectedAiProvider() {
   return form.querySelector("input[name='aiProvider']:checked")?.value || "rules";
+}
+
+function providerLabel(provider) {
+  const labels = {
+    openai: "OpenAI",
+    deepseek: "DeepSeek",
+  };
+  return labels[provider] || provider;
+}
+
+function getSessionAiKey(provider) {
+  if (sessionAiKeys[provider]) {
+    return sessionAiKeys[provider];
+  }
+  const key = window.prompt(
+    `Введите ключ доступа для ${providerLabel(provider)}. Он будет использован только в текущей вкладке и не будет сохранен в проекте.`
+  );
+  if (!key || !key.trim()) {
+    return "";
+  }
+  sessionAiKeys[provider] = key.trim();
+  return sessionAiKeys[provider];
+}
+
+function isMissingAiKeyError(detail) {
+  const message = typeof detail === "string" ? detail : detail?.message || "";
+  return message.toLowerCase().includes("не задан ключ");
 }
 
 function setAiRequestStage(stage) {
@@ -647,14 +675,35 @@ async function finalizeAiSelection() {
   startAiRequestFlow();
   setStatus(aiSelectionStatus, "Отправляю JSON с компанией, фотографиями и отзывами в ИИ...");
   try {
-    const response = await fetch(`/api/ai-selection/${encodeURIComponent(activeAiSelection.id)}/finalize`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: selectedAiProvider(), ...collectManualChoices() }),
-    });
-    const payload = await response.json();
+    const provider = selectedAiProvider();
+    const choices = collectManualChoices();
+    const requestFinalSelection = async (apiKey = "") => {
+      const requestBody = { provider, ...choices };
+      if (apiKey) {
+        requestBody.apiKey = apiKey;
+      }
+      const response = await fetch(`/api/ai-selection/${encodeURIComponent(activeAiSelection.id)}/finalize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+      const payload = await response.json();
+      return { response, payload };
+    };
+
+    let { response, payload } = await requestFinalSelection(sessionAiKeys[provider] || "");
+    let detail = payload.detail || "Не удалось получить ответ ИИ";
+    if (!response.ok && isMissingAiKeyError(detail)) {
+      const apiKey = getSessionAiKey(provider);
+      if (!apiKey) {
+        throw new Error(`Ключ для ${providerLabel(provider)} не введен.`);
+      }
+      setStatus(aiSelectionStatus, "Ключ получен. Повторяю запрос в ИИ...");
+      ({ response, payload } = await requestFinalSelection(apiKey));
+      detail = payload.detail || "Не удалось получить ответ ИИ";
+    }
+
     if (!response.ok) {
-      const detail = payload.detail || "Не удалось получить ответ ИИ";
       if (detail.rawResponse) {
         showAiRawResponse(detail.rawResponse, "Ошибка разбора ответа");
       } else if (typeof detail !== "string") {

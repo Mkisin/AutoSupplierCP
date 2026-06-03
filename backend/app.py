@@ -1387,8 +1387,15 @@ def _ai_prompt_payload(report: dict[str, Any], selection: dict[str, Any]) -> dic
     }
 
 
-def _request_ai_choice(provider: str, report: dict[str, Any], selection: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _request_ai_choice(
+    provider: str,
+    report: dict[str, Any],
+    selection: dict[str, Any],
+    api_key_override: str = "",
+) -> tuple[dict[str, Any], dict[str, Any]]:
     settings = _ai_provider_settings(provider)
+    if api_key_override.strip():
+        settings["api_key"] = api_key_override.strip()
     if settings["provider"] == "rules":
         raise HTTPException(status_code=400, detail="Для ответа ИИ выберите OpenAI или DeepSeek")
     if not settings["api_key"]:
@@ -1624,9 +1631,14 @@ def _selection_snapshot(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _call_ai_final_selector(provider: str, report: dict[str, Any], base_selection: dict[str, Any]) -> dict[str, Any]:
+def _call_ai_final_selector(
+    provider: str,
+    report: dict[str, Any],
+    base_selection: dict[str, Any],
+    api_key_override: str = "",
+) -> dict[str, Any]:
     try:
-        ai_payload, raw_response = _request_ai_choice(provider, report, base_selection)
+        ai_payload, raw_response = _request_ai_choice(provider, report, base_selection, api_key_override)
         selection = _merge_ai_selection(base_selection, ai_payload)
         selection["aiRawResponse"] = raw_response
         return selection
@@ -1828,6 +1840,7 @@ def approve_ai_selection(selection_id: str, payload: dict[str, Any] | None = Non
 @app.post("/api/ai-selection/{selection_id}/finalize")
 def finalize_ai_selection(selection_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     provider = str((payload or {}).get("provider", "")).strip().lower()
+    api_key_override = str((payload or {}).get("apiKey", "")).strip()
     photo_ids, review_ids = _normalize_choice_payload(payload)
     with AI_SELECTIONS_LOCK:
         item = AI_SELECTIONS.get(selection_id)
@@ -1840,7 +1853,7 @@ def finalize_ai_selection(selection_id: str, payload: dict[str, Any] | None = No
         )
         chosen_provider = provider or str(item.get("provider", "rules")).strip().lower() or "rules"
         report = dict(item.get("report") or {})
-    final_selection = _call_ai_final_selector(chosen_provider, report, base_selection)
+    final_selection = _call_ai_final_selector(chosen_provider, report, base_selection, api_key_override)
     with AI_SELECTIONS_LOCK:
         item = AI_SELECTIONS.get(selection_id)
         if not item:
