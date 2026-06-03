@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Параметры КП</title>
-    <link rel="stylesheet" href="styles.css?v=20260603-preferred-networks-v2" />
+    <link rel="stylesheet" href="styles.css?v=20260603-ai-raw-response" />
   </head>
   <body>
     <main class="page-shell">
@@ -214,8 +214,24 @@
           <div class="ai-selection-actions">
             <button type="button" class="secondary compact" id="prepareAiSelectionBtn">Подготовить выбор</button>
             <button type="button" class="secondary compact" id="finalizeAiSelectionBtn" disabled>Отдать выбор ИИ</button>
-            <button type="button" class="primary compact" id="approveAiSelectionBtn" disabled>Одобрить выбор</button>
+            <button type="button" class="primary compact" id="approveAiSelectionBtn" disabled>Одобрить выбор и сформировать презентацию</button>
             <p id="aiSelectionStatus" class="status muted"></p>
+          </div>
+
+          <div id="aiDebugPanel" class="ai-debug-panel" hidden>
+            <div class="ai-debug-head">
+              <strong>JSON запроса в ИИ</strong>
+              <span id="aiDebugStatus"></span>
+            </div>
+            <pre id="aiDebugJson"></pre>
+          </div>
+
+          <div id="aiRawResponsePanel" class="ai-debug-panel" hidden>
+            <div class="ai-debug-head">
+              <strong>Сырой ответ ИИ</strong>
+              <span id="aiRawResponseStatus"></span>
+            </div>
+            <pre id="aiRawResponseJson"></pre>
           </div>
 
           <div id="aiSelectionPanel" class="ai-selection-panel" hidden>
@@ -249,6 +265,23 @@
             </div>
           </div>
           <div id="aiFinalPanel" class="ai-selection-panel" hidden>
+            <div id="aiRequestFlow" class="ai-request-flow" hidden>
+              <div class="ai-request-step" data-ai-stage="send">
+                <span></span>
+                <strong>Отправка запроса</strong>
+                <small>Передаем компании, 12 фото и 6 отзывов</small>
+              </div>
+              <div class="ai-request-step" data-ai-stage="think">
+                <span></span>
+                <strong>ИИ анализирует</strong>
+                <small id="aiThinkingTimer">0 сек.</small>
+              </div>
+              <div class="ai-request-step" data-ai-stage="receive">
+                <span></span>
+                <strong>Ответ получен</strong>
+                <small>Проверяем выбранные id</small>
+              </div>
+            </div>
             <div class="ai-selection-summary">
               <span id="aiFinalSource"></span>
               <p id="aiFinalRationale"></p>
@@ -268,7 +301,7 @@
               </section>
             </div>
             <div class="ai-final-actions">
-              <button type="button" class="primary compact" id="approveAiFinalBtn" disabled>Одобрить ответ ИИ</button>
+              <button type="button" class="primary compact" id="approveAiFinalBtn" disabled>Одобрить ответ ИИ и сформировать презентацию</button>
             </div>
           </div>
         </section>
@@ -291,6 +324,6 @@
       </form>
     </main>
 
-    <script src="app.js?v=20260603-preferred-networks-v2"></script>
+    <script src="app.js?v=20260603-approve-and-build"></script>
   </body>
 </html>

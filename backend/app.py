@@ -5,11 +5,13 @@ import mimetypes
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -25,10 +27,30 @@ from fastapi.staticfiles import StaticFiles
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_env_file(ROOT / ".env")
+
 DATA_FILE = ROOT / "Данные для разработки.xlsx"
 PHOTO_CATALOG_FILE = ROOT / "Каталог фотографий сетей.xlsx"
 PHOTO_DIR = ROOT / "Фото товаров"
 STATIC_DIR = ROOT / "frontend"
+AI_CONFIG_FILE = Path(os.environ.get("AI_CONFIG_FILE", ROOT / "ai_config.json"))
+AI_PROMPT_FILE = Path(os.environ.get("AI_PROMPT_FILE", ROOT / "mainprompt.md"))
 DADATA_API_KEY = os.environ.get("DADATA_API_KEY", "e827de6169ff2dd15ed29a07d4489511b80d1463")
 DADATA_FIND_PARTY_URL = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/findById/party"
 DADATA_FIND_OKVED_URL = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/findById/okved2"
@@ -72,6 +94,14 @@ def _get_presentation_job(job_id: str) -> dict[str, Any]:
         if not job:
             raise HTTPException(status_code=404, detail="Задача сборки не найдена")
         return dict(job)
+
+
+def _open_local_file(path: Path) -> str:
+    try:
+        os.startfile(str(path.resolve()))  # type: ignore[attr-defined]
+        return "opened"
+    except Exception as exc:
+        return f"open_failed: {exc}"
 
 
 def _run_presentation_job(job_id: str, company: str, selection: dict[str, Any] | None = None) -> None:
@@ -143,6 +173,7 @@ def _run_presentation_job(job_id: str, company: str, selection: dict[str, Any] |
         if not created.exists():
             raise RuntimeError("Презентация не была создана")
 
+        open_status = _open_local_file(created)
         _set_presentation_job(
             job_id,
             status="done",
@@ -150,6 +181,7 @@ def _run_presentation_job(job_id: str, company: str, selection: dict[str, Any] |
             message="Презентация готова",
             fileName=created.name,
             downloadUrl=f"/api/presentations/{urllib.parse.quote(created.name)}",
+            openStatus=open_status,
             report=report,
         )
     except Exception as exc:
@@ -1252,21 +1284,260 @@ def _default_selection_from_report(report: dict[str, Any], provider: str) -> dic
 
 def _ai_provider_settings(provider: str) -> dict[str, str]:
     normalized = provider.strip().lower()
-    if normalized == "openai":
+    if normalized not in {"openai", "deepseek"}:
         return {
-            "provider": "openai",
+            "provider": "rules",
+            "api_key": "",
+            "base_url": "",
+            "model": "",
+            "chat_completions_path": "/chat/completions",
+            "timeout_seconds": "45",
+            "temperature": "0.2",
+            "max_tokens": "",
+        }
+
+    defaults = {
+        "openai": {
             "api_key": os.environ.get("OPENAI_API_KEY", ""),
             "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             "model": os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
-        }
-    if normalized == "deepseek":
-        return {
-            "provider": "deepseek",
+        },
+        "deepseek": {
             "api_key": os.environ.get("DEEPSEEK_API_KEY", ""),
             "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        },
+    }
+    settings = {
+        "provider": normalized,
+        "chat_completions_path": "/chat/completions",
+        "timeout_seconds": os.environ.get("AI_TIMEOUT_SECONDS", "120"),
+        "temperature": os.environ.get("AI_TEMPERATURE", "0.2"),
+        "max_tokens": os.environ.get("AI_MAX_TOKENS", "1200"),
+        **defaults[normalized],
+    }
+    config = _load_ai_config().get("providers", {}).get(normalized, {})
+    if isinstance(config, dict):
+        for key in ("api_key", "base_url", "model", "chat_completions_path", "timeout_seconds", "temperature", "max_tokens"):
+            value = config.get(key)
+            if value is not None and str(value).strip():
+                settings[key] = str(value).strip()
+    return settings
+
+
+def _load_ai_config() -> dict[str, Any]:
+    if not AI_CONFIG_FILE.exists():
+        return {}
+    try:
+        payload = json.loads(AI_CONFIG_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"Некорректный JSON в {AI_CONFIG_FILE.name}") from exc
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_ai_prompt() -> str:
+    if AI_PROMPT_FILE.exists():
+        return AI_PROMPT_FILE.read_text(encoding="utf-8").strip()
+    return (
+        "Ты редактор B2B-презентаций. Выбери photo_ids и review_ids только из переданных кандидатов. "
+        "Верни только валидный JSON."
+    )
+
+
+def _split_form_tags(value: Any) -> list[str]:
+    result = []
+    seen = set()
+    for item in re.split(r"[;,]", str(value or "")):
+        normalized = item.strip()
+        key = normalized.casefold()
+        if normalized and key not in seen:
+            result.append(normalized)
+            seen.add(key)
+    return result
+
+
+def _client_prompt_payload(report: dict[str, Any]) -> dict[str, Any]:
+    client_record = report.get("client_record") if isinstance(report.get("client_record"), dict) else {}
+    return {
+        "company": report.get("client", ""),
+        "contact": report.get("contact", ""),
+        "position": report.get("position", ""),
+        "category": report.get("category", ""),
+        "company_type": report.get("company_type") or client_record.get("Тип компании", ""),
+        "region": client_record.get("Регион", "") or client_record.get("Город", ""),
+        "city": client_record.get("Город", ""),
+        "price_category": report.get("price_category") or client_record.get("Ценовая категория", ""),
+        "preferred_networks": _split_form_tags(report.get("preferred_networks") or client_record.get("Предпочтительные сети", "")),
+    }
+
+
+def _ai_prompt_payload(report: dict[str, Any], selection: dict[str, Any]) -> dict[str, Any]:
+    current_photo_ids, current_review_ids = _current_choice_ids(selection)
+    return {
+        "client": _client_prompt_payload(report),
+        "stats": selection.get("stats"),
+        "required_photo_count": selection.get("required_photo_count"),
+        "required_review_count": selection.get("required_review_count"),
+        "photo_candidates": selection.get("photo_candidates") or [],
+        "review_candidates": selection.get("review_candidates") or [],
+        "current_selection": {
+            "photo_ids": current_photo_ids,
+            "review_ids": current_review_ids,
+        },
+    }
+
+
+def _request_ai_choice(provider: str, report: dict[str, Any], selection: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    settings = _ai_provider_settings(provider)
+    if settings["provider"] == "rules":
+        raise HTTPException(status_code=400, detail="Для ответа ИИ выберите OpenAI или DeepSeek")
+    if not settings["api_key"]:
+        raise HTTPException(status_code=400, detail=f"Не задан ключ для {settings['provider']}")
+    body = _ai_request_body(settings, report, selection)
+
+    try:
+        timeout = int(float(settings.get("timeout_seconds", "45")))
+    except ValueError:
+        timeout = 120
+
+    url = settings["base_url"].rstrip("/") + "/" + settings.get("chat_completions_path", "/chat/completions").strip("/")
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {settings['api_key']}",
+            "User-Agent": "AutoSupplierCP",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw_text = response.read().decode("utf-8", errors="replace")
+            try:
+                response_payload = json.loads(raw_text)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "message": f"ИИ-провайдер вернул не JSON: {exc}",
+                        "rawResponse": {
+                            "provider": settings["provider"],
+                            "url": url,
+                            "status": "invalid_json_response",
+                            "rawText": raw_text,
+                            "parse_error": str(exc),
+                        },
+                    },
+                ) from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=f"ИИ-провайдер не успел ответить за {timeout} секунд. Увеличьте timeout_seconds в ai_config.json или попробуйте модель быстрее.",
+        ) from exc
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": f"ИИ-провайдер вернул ошибку HTTP {exc.code}: {details}",
+                "rawResponse": {
+                    "provider": settings["provider"],
+                    "url": url,
+                    "status": "http_error",
+                    "http_status": exc.code,
+                    "rawText": details,
+                },
+            },
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": f"ИИ-провайдер недоступен на сетевом уровне: {exc}",
+                "rawResponse": {
+                    "provider": settings["provider"],
+                    "url": url,
+                    "status": "network_error",
+                    "error": str(exc),
+                    "reason": str(getattr(exc, "reason", "")),
+                },
+            },
+        ) from exc
+    try:
+        content = response_payload["choices"][0]["message"].get("content") or ""
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": f"ИИ-провайдер вернул неожиданный формат ответа: {exc}",
+                "rawResponse": {
+                    "provider": settings["provider"],
+                    "url": url,
+                    "status": "unexpected_response_shape",
+                    "response": response_payload,
+                    "parse_error": str(exc),
+                },
+            },
+        ) from exc
+    raw_response = {
+        "provider": settings["provider"],
+        "url": url,
+        "status": "ok",
+        "content": content,
+        "response": response_payload,
+    }
+    try:
+        return _extract_json_object(content), raw_response
+    except Exception as exc:
+        raw_response["parse_error"] = str(exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": f"ИИ-провайдер ответил некорректно: {exc}",
+                "rawResponse": raw_response,
+            },
+        ) from exc
+
+
+def _ai_request_body(settings: dict[str, str], report: dict[str, Any], selection: dict[str, Any]) -> dict[str, Any]:
+    try:
+        temperature = float(settings.get("temperature", "0.2"))
+    except ValueError:
+        temperature = 0.2
+    try:
+        max_tokens = int(float(settings.get("max_tokens", "0")))
+    except ValueError:
+        max_tokens = 0
+
+    body: dict[str, Any] = {
+        "model": settings["model"],
+        "messages": [
+            {"role": "system", "content": _read_ai_prompt()},
+            {"role": "user", "content": json.dumps(_ai_prompt_payload(report, selection), ensure_ascii=False)},
+        ],
+        "temperature": temperature,
+    }
+    if max_tokens > 0:
+        body["max_tokens"] = max_tokens
+    return body
+
+
+def _ai_request_preview(provider: str, report: dict[str, Any], selection: dict[str, Any]) -> dict[str, Any]:
+    settings = _ai_provider_settings(provider)
+    if settings["provider"] == "rules":
+        return {
+            "provider": "rules",
+            "message": "Для просмотра JSON запроса выберите OpenAI или DeepSeek.",
+            "request": None,
         }
-    return {"provider": "rules", "api_key": "", "base_url": "", "model": ""}
+    return {
+        "provider": settings["provider"],
+        "url": settings["base_url"].rstrip("/") + "/" + settings.get("chat_completions_path", "/chat/completions").strip("/"),
+        "timeout_seconds": settings.get("timeout_seconds"),
+        "request": _ai_request_body(settings, report, selection),
+    }
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -1312,55 +1583,9 @@ def _call_ai_selector(provider: str, report: dict[str, Any], default_selection: 
             "summary": f"Ключ для {settings['provider']} не задан, использован алгоритмический выбор.",
         }
         return selection
-
-    prompt_payload = {
-        "client": report.get("client"),
-        "category": report.get("category"),
-        "stats": default_selection.get("stats"),
-        "required_photo_count": default_selection.get("required_photo_count"),
-        "required_review_count": default_selection.get("required_review_count"),
-        "photo_candidates": default_selection.get("photo_candidates"),
-        "review_candidates": default_selection.get("review_candidates"),
-        "default_photo_ids": default_selection.get("selected_photo_ids"),
-        "default_review_ids": default_selection.get("selected_review_ids"),
-    }
-    prompt = (
-        "Выбери материалы для коммерческой презентации. "
-        "Не придумывай новые факты, числа, пути файлов и отзывы. "
-        "Используй только переданные кандидаты. "
-        "Верни только JSON-объект с полями rationale, photo_ids, review_ids. "
-        "photo_ids должен содержать ровно required_photo_count id, "
-        "review_ids должен содержать ровно required_review_count id.\n\n"
-        + json.dumps(prompt_payload, ensure_ascii=False)
-    )
-    body = {
-        "model": settings["model"],
-        "messages": [
-            {
-                "role": "system",
-                "content": "Ты редактор B2B-презентаций. Возвращай только валидный JSON.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.2,
-    }
-    url = settings["base_url"].rstrip("/") + "/chat/completions"
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": f"Bearer {settings['api_key']}",
-            "User-Agent": "AutoSupplierCP",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
-        content = response_payload["choices"][0]["message"]["content"]
-        ai_payload = _extract_json_object(content)
+        ai_payload, raw_response = _request_ai_choice(provider, report, default_selection)
+        default_selection["aiRawResponse"] = raw_response
         return _merge_ai_selection(default_selection, ai_payload)
     except Exception as exc:
         selection = dict(default_selection)
@@ -1400,61 +1625,11 @@ def _selection_snapshot(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _call_ai_final_selector(provider: str, report: dict[str, Any], base_selection: dict[str, Any]) -> dict[str, Any]:
-    settings = _ai_provider_settings(provider)
-    if settings["provider"] == "rules":
-        raise HTTPException(status_code=400, detail="Для ответа ИИ выберите OpenAI или DeepSeek")
-    if not settings["api_key"]:
-        raise HTTPException(status_code=400, detail=f"Не задан ключ для {settings['provider']}")
-
-    current_photo_ids, current_review_ids = _current_choice_ids(base_selection)
-    prompt_payload = {
-        "client": report.get("client"),
-        "category": report.get("category"),
-        "stats": base_selection.get("stats"),
-        "required_photo_count": base_selection.get("required_photo_count"),
-        "required_review_count": base_selection.get("required_review_count"),
-        "photo_candidates": base_selection.get("photo_candidates"),
-        "review_candidates": base_selection.get("review_candidates"),
-        "current_selection": {
-            "photo_ids": current_photo_ids,
-            "review_ids": current_review_ids,
-        },
-    }
-    prompt = (
-        "Выбери лучший комплект материалов для коммерческой презентации. "
-        "Используй только переданные варианты. "
-        "Верни только JSON с полями rationale, photo_ids, review_ids. "
-        "photo_ids должен содержать ровно required_photo_count id, "
-        "review_ids должен содержать ровно required_review_count id. "
-        "Не придумывай новые данные.\n\n"
-        + json.dumps(prompt_payload, ensure_ascii=False)
-    )
-    body = {
-        "model": settings["model"],
-        "messages": [
-            {"role": "system", "content": "Ты редактор B2B-презентаций. Возвращай только валидный JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.2,
-    }
-    url = settings["base_url"].rstrip("/") + "/chat/completions"
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": f"Bearer {settings['api_key']}",
-            "User-Agent": "AutoSupplierCP",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
-        content = response_payload["choices"][0]["message"]["content"]
-        ai_payload = _extract_json_object(content)
-        return _merge_ai_selection(base_selection, ai_payload)
+        ai_payload, raw_response = _request_ai_choice(provider, report, base_selection)
+        selection = _merge_ai_selection(base_selection, ai_payload)
+        selection["aiRawResponse"] = raw_response
+        return selection
     except HTTPException:
         raise
     except Exception as exc:
@@ -1675,6 +1850,24 @@ def finalize_ai_selection(selection_id: str, payload: dict[str, Any] | None = No
         item["finalSelection"] = final_selection
         item["updatedAt"] = datetime.now().isoformat(timespec="seconds")
         return _selection_snapshot(item)
+
+
+@app.post("/api/ai-selection/{selection_id}/request-preview")
+def ai_selection_request_preview(selection_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    provider = str((payload or {}).get("provider", "")).strip().lower()
+    photo_ids, review_ids = _normalize_choice_payload(payload)
+    with AI_SELECTIONS_LOCK:
+        item = AI_SELECTIONS.get(selection_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Выбор материалов не найден")
+        base_selection = _build_selection_from_choices(
+            item.get("selection") or {},
+            photo_ids=photo_ids,
+            review_ids=review_ids,
+        )
+        chosen_provider = provider or str(item.get("provider", "rules")).strip().lower() or "rules"
+        report = dict(item.get("report") or {})
+    return _ai_request_preview(chosen_provider, report, base_selection)
 
 
 @app.post("/api/cards")

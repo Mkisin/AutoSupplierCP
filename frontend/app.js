@@ -27,6 +27,14 @@ const aiFinalStats = document.querySelector("#aiFinalStats");
 const aiFinalPhotos = document.querySelector("#aiFinalPhotos");
 const aiFinalReviews = document.querySelector("#aiFinalReviews");
 const approveAiFinalBtn = document.querySelector("#approveAiFinalBtn");
+const aiRequestFlow = document.querySelector("#aiRequestFlow");
+const aiThinkingTimer = document.querySelector("#aiThinkingTimer");
+const aiDebugPanel = document.querySelector("#aiDebugPanel");
+const aiDebugStatus = document.querySelector("#aiDebugStatus");
+const aiDebugJson = document.querySelector("#aiDebugJson");
+const aiRawResponsePanel = document.querySelector("#aiRawResponsePanel");
+const aiRawResponseStatus = document.querySelector("#aiRawResponseStatus");
+const aiRawResponseJson = document.querySelector("#aiRawResponseJson");
 const presentationProgress = document.querySelector("#presentationProgress");
 const presentationProgressText = document.querySelector("#presentationProgressText");
 const presentationProgressPercent = document.querySelector("#presentationProgressPercent");
@@ -43,6 +51,8 @@ let activePresentationJobId = null;
 let activeSearchRequestId = 0;
 let activeAiSelection = null;
 let approvedAiSelectionId = "";
+let aiRequestStartedAt = 0;
+let aiThinkingInterval = null;
 let dadataExpanded = false;
 
 const optionIds = {
@@ -175,9 +185,130 @@ function selectedAiProvider() {
   return form.querySelector("input[name='aiProvider']:checked")?.value || "rules";
 }
 
+function setAiRequestStage(stage) {
+  if (!aiRequestFlow) {
+    return;
+  }
+  const stages = ["send", "think", "receive"];
+  aiRequestFlow.hidden = false;
+  aiRequestFlow.querySelectorAll(".ai-request-step").forEach((item) => {
+    const itemStage = item.dataset.aiStage;
+    item.classList.toggle("is-active", itemStage === stage);
+    item.classList.toggle("is-done", stages.indexOf(itemStage) < stages.indexOf(stage));
+  });
+}
+
+function stopAiRequestFlow() {
+  if (aiThinkingInterval) {
+    window.clearInterval(aiThinkingInterval);
+    aiThinkingInterval = null;
+  }
+  aiRequestStartedAt = 0;
+  if (!aiRequestFlow) {
+    return;
+  }
+  aiRequestFlow.hidden = true;
+  aiRequestFlow.querySelectorAll(".ai-request-step").forEach((item) => {
+    item.classList.remove("is-active", "is-done");
+  });
+}
+
+function startAiRequestFlow() {
+  stopAiRequestFlow();
+  aiRequestStartedAt = Date.now();
+  aiFinalSection.hidden = false;
+  aiFinalPanel.hidden = false;
+  aiFinalSource.textContent = `Источник: ${selectedAiProvider()}`;
+  aiFinalRationale.textContent = "ИИ получает JSON с параметрами компании, кандидатами фотографий и отзывов.";
+  aiFinalStats.innerHTML = "";
+  aiFinalPhotos.innerHTML = "";
+  aiFinalReviews.innerHTML = "";
+  setAiRequestStage("send");
+  if (aiThinkingTimer) {
+    aiThinkingTimer.textContent = "0 сек.";
+  }
+  window.setTimeout(() => {
+    if (aiRequestStartedAt) {
+      setAiRequestStage("think");
+    }
+  }, 450);
+  aiThinkingInterval = window.setInterval(() => {
+    if (!aiThinkingTimer || !aiRequestStartedAt) {
+      return;
+    }
+    const seconds = Math.max(0, Math.round((Date.now() - aiRequestStartedAt) / 1000));
+    aiThinkingTimer.textContent = `${seconds} сек.`;
+  }, 500);
+}
+
+function finishAiRequestFlow() {
+  if (aiThinkingInterval) {
+    window.clearInterval(aiThinkingInterval);
+    aiThinkingInterval = null;
+  }
+  setAiRequestStage("receive");
+}
+
+function clearAiDebugPanel() {
+  if (!aiDebugPanel) {
+    return;
+  }
+  aiDebugPanel.hidden = true;
+  aiDebugStatus.textContent = "";
+  aiDebugJson.textContent = "";
+}
+
+function clearAiRawResponsePanel() {
+  if (!aiRawResponsePanel) {
+    return;
+  }
+  aiRawResponsePanel.hidden = true;
+  aiRawResponseStatus.textContent = "";
+  aiRawResponseJson.textContent = "";
+}
+
+function showAiRawResponse(rawResponse, statusText = "") {
+  if (!aiRawResponsePanel) {
+    return;
+  }
+  aiRawResponsePanel.hidden = false;
+  aiRawResponseStatus.textContent = statusText || rawResponse?.provider || "Ответ получен";
+  aiRawResponseJson.textContent = typeof rawResponse === "string"
+    ? rawResponse
+    : JSON.stringify(rawResponse || {}, null, 2);
+}
+
+async function refreshAiDebugPayload() {
+  if (!activeAiSelection?.id || !aiDebugPanel) {
+    clearAiDebugPanel();
+    return;
+  }
+  aiDebugPanel.hidden = false;
+  aiDebugStatus.textContent = "Готовлю preview...";
+  try {
+    const response = await fetch(`/api/ai-selection/${encodeURIComponent(activeAiSelection.id)}/request-preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: selectedAiProvider(), ...collectManualChoices() }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Не удалось подготовить JSON запроса");
+    }
+    aiDebugStatus.textContent = payload.url ? `${payload.provider} · ${payload.url}` : payload.message || payload.provider;
+    aiDebugJson.textContent = JSON.stringify(payload.request || payload, null, 2);
+  } catch (error) {
+    aiDebugStatus.textContent = "Ошибка preview";
+    aiDebugJson.textContent = error.message;
+  }
+}
+
 function clearAiSelection() {
   activeAiSelection = null;
   approvedAiSelectionId = "";
+  stopAiRequestFlow();
+  clearAiDebugPanel();
+  clearAiRawResponsePanel();
   approveAiSelectionBtn.disabled = true;
   finalizeAiSelectionBtn.disabled = true;
   approveAiFinalBtn.disabled = true;
@@ -352,6 +483,7 @@ function renderAiSelection(payload) {
   );
   aiSelectionPanel.hidden = false;
   syncSelectionApprovalState();
+  refreshAiDebugPayload();
 
   if (payload.finalSelection) {
     renderAiFinalSelection(payload.finalSelection);
@@ -370,7 +502,7 @@ function renderAiFinalSelection(selection) {
   const photoMap = new Map((selection?.photo_candidates || []).map((item) => [item.id, item]));
   (selection?.selected_photo_ids || []).forEach((photoId, index) => {
     const item = photoMap.get(photoId);
-    appendChoice(aiFinalPhotos, item?.network || `Фото ${index + 1}`, item ? [item.network_type, item.region, item.price_segment, item.path].filter(Boolean).join(" · ") : photoId);
+    aiFinalPhotos.append(renderAiFinalPhotoCard(item, photoId, index));
   });
   if (!aiFinalPhotos.children.length) {
     appendChoice(aiFinalPhotos, "Фотографии", "Фотографии не выбраны");
@@ -383,7 +515,7 @@ function renderAiFinalSelection(selection) {
   const reviewMap = new Map((selection?.review_candidates || []).map((item) => [item.id, item]));
   (selection?.selected_review_ids || []).forEach((reviewId, index) => {
     const review = reviewMap.get(reviewId);
-    appendChoice(aiFinalReviews, review?.company || `Отзыв ${index + 1}`, review ? [review.person, review.text].filter(Boolean).join(" - ") : reviewId);
+    aiFinalReviews.append(renderAiFinalReviewCard(review, reviewId, index));
   });
   if (!aiFinalReviews.children.length) {
     appendChoice(aiFinalReviews, "Отзывы", "Отзывы не выбраны");
@@ -391,6 +523,48 @@ function renderAiFinalSelection(selection) {
   if (rationale.reviews) {
     appendChoice(aiFinalReviews, "Почему", rationale.reviews);
   }
+}
+
+function renderAiFinalPhotoCard(item, photoId, index) {
+  const card = document.createElement("article");
+  card.className = "ai-final-card is-photo";
+  if (item?.path) {
+    const preview = document.createElement("img");
+    preview.className = "ai-final-preview";
+    preview.src = previewUrlForPath(item.path);
+    preview.alt = item.network || `Фото ${index + 1}`;
+    card.append(preview);
+  }
+
+  const body = document.createElement("div");
+  body.className = "ai-final-card-body";
+  const title = document.createElement("strong");
+  title.textContent = item?.network || `Фото ${index + 1}`;
+  const meta = document.createElement("span");
+  meta.textContent = item
+    ? [item.network_type, item.region, item.price_segment].filter(Boolean).join(" · ")
+    : photoId;
+  const detail = document.createElement("small");
+  detail.textContent = item?.path || photoId;
+  body.append(title, meta, detail);
+  card.append(body);
+  return card;
+}
+
+function renderAiFinalReviewCard(review, reviewId, index) {
+  const card = document.createElement("article");
+  card.className = "ai-final-card";
+  const body = document.createElement("div");
+  body.className = "ai-final-card-body";
+  const title = document.createElement("strong");
+  title.textContent = review?.company || `Отзыв ${index + 1}`;
+  const meta = document.createElement("span");
+  meta.textContent = [review?.person, review?.group, review?.networks].filter(Boolean).join(" · ");
+  const detail = document.createElement("small");
+  detail.textContent = review?.text || reviewId;
+  body.append(title, meta, detail);
+  card.append(body);
+  return card;
 }
 
 async function prepareAiSelection() {
@@ -448,7 +622,8 @@ async function approveAiSelection(mode = "manual") {
     if (payload.selection) {
       activeAiSelection.selection = payload.selection;
     }
-    setStatus(aiSelectionStatus, "Выбор одобрен. Можно формировать презентацию.");
+    setStatus(aiSelectionStatus, "Выбор одобрен. Запускаю формирование презентации...");
+    await buildPresentation();
   } catch (error) {
     setStatus(aiSelectionStatus, error.message, true);
   } finally {
@@ -468,7 +643,9 @@ async function finalizeAiSelection() {
   }
 
   finalizeAiSelectionBtn.disabled = true;
-  setStatus(aiSelectionStatus, "Отдаю варианты ИИ...");
+  clearAiRawResponsePanel();
+  startAiRequestFlow();
+  setStatus(aiSelectionStatus, "Отправляю JSON с компанией, фотографиями и отзывами в ИИ...");
   try {
     const response = await fetch(`/api/ai-selection/${encodeURIComponent(activeAiSelection.id)}/finalize`, {
       method: "POST",
@@ -477,13 +654,28 @@ async function finalizeAiSelection() {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.detail || "Не удалось получить ответ ИИ");
+      const detail = payload.detail || "Не удалось получить ответ ИИ";
+      if (detail.rawResponse) {
+        showAiRawResponse(detail.rawResponse, "Ошибка разбора ответа");
+      } else if (typeof detail !== "string") {
+        showAiRawResponse(detail, "Ошибка ИИ");
+      }
+      throw new Error(typeof detail === "string" ? detail : detail.message || "Не удалось получить ответ ИИ");
     }
+    finishAiRequestFlow();
     activeAiSelection = payload;
     renderAiFinalSelection(payload.finalSelection || {});
+    if (payload.finalSelection?.aiRawResponse) {
+      showAiRawResponse(payload.finalSelection.aiRawResponse, "Ответ разобран");
+    }
     approveAiFinalBtn.disabled = false;
     setStatus(aiSelectionStatus, "ИИ вернул окончательный вариант. Проверьте его ниже.");
   } catch (error) {
+    stopAiRequestFlow();
+    if (!activeAiSelection?.finalSelection) {
+      aiFinalSection.hidden = true;
+      aiFinalPanel.hidden = true;
+    }
     setStatus(aiSelectionStatus, error.message, true);
   } finally {
     finalizeAiSelectionBtn.disabled = !canFinalizeWithAi();
@@ -974,7 +1166,8 @@ async function pollPresentationJob(jobId) {
     updatePresentationProgress(job);
     if (job.status === "done") {
       saveStatus.classList.remove("error");
-      saveStatus.innerHTML = `Готово: <a href="${job.downloadUrl}" target="_blank" rel="noreferrer">${job.fileName}</a>`;
+      const openText = job.openStatus === "opened" ? " Файл открыт на компьютере." : "";
+      saveStatus.innerHTML = `Готово: <a href="${job.downloadUrl}" target="_blank" rel="noreferrer">${job.fileName}</a>${openText}`;
       return;
     }
     if (job.status === "error") {
@@ -1029,6 +1222,7 @@ aiSelectionPanel.addEventListener("change", (event) => {
     activeAiSelection.approved = false;
   }
   syncSelectionApprovalState();
+  refreshAiDebugPayload();
   const counts = selectedCounts();
   const requiredPhotos = Number(activeAiSelection?.selection?.required_photo_count || 0);
   const requiredReviews = Number(activeAiSelection?.selection?.required_review_count || 0);
@@ -1038,7 +1232,8 @@ aiSelectionPanel.addEventListener("change", (event) => {
     setStatus(aiSelectionStatus, `Сейчас выбрано фото: ${counts.photoIds.length}/${requiredPhotos}, отзывы: ${counts.reviewIds.length}/${requiredReviews}.`);
   }
 });
-buildPresentationBtn.addEventListener("click", async () => {
+
+async function buildPresentation() {
   const company = companyNameInput.value.trim();
   if (!company) {
     setStatus(saveStatus, "Сначала выберите или заполните компанию.", true);
@@ -1083,6 +1278,8 @@ buildPresentationBtn.addEventListener("click", async () => {
       buildPresentationBtn.textContent = buildPresentationDefaultText;
     }
   }
-});
+}
+
+buildPresentationBtn.addEventListener("click", buildPresentation);
 
 loadOptions().catch((error) => setStatus(saveStatus, error.message, true));

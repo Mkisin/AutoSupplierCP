@@ -9,6 +9,7 @@ env/
 .env
 .env.*
 !.env.example
+ai_config.json
 
 *.log
 debug.log
