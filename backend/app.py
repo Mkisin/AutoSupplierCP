@@ -71,6 +71,56 @@ AI_SELECTIONS: dict[str, dict[str, Any]] = {}
 AI_SELECTIONS_LOCK = threading.Lock()
 DIRECT_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+DATA_SOURCES_FILE = ROOT / "data_sources.json"
+
+
+def _download_data_sources() -> None:
+    if not DATA_SOURCES_FILE.exists():
+        return
+
+    config = json.loads(DATA_SOURCES_FILE.read_text(encoding="utf-8"))
+
+    for name, info in config.get("sheets", {}).items():
+        local_path = ROOT / info["local_file"]
+        if info.get("download_once") and local_path.exists():
+            print(f"[data] {name}: локальный файл есть, пропуск", flush=True)
+            continue
+        try:
+            print(f"[data] Скачиваю {name}...", flush=True)
+            req = urllib.request.Request(
+                info["url"], headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with DIRECT_HTTP_OPENER.open(req, timeout=30) as resp:
+                data = resp.read()
+            tmp = local_path.with_name(local_path.name + ".tmp")
+            tmp.write_bytes(data)
+            tmp.replace(local_path)
+            print(f"[data] {name}: готово ({len(data):,} байт)", flush=True)
+        except Exception as exc:
+            print(f"[data] {name}: ошибка — {exc}", flush=True)
+
+    for name, info in config.get("drive_folders", {}).items():
+        local_dir = ROOT / info["local_dir"]
+        if local_dir.exists() and any(local_dir.iterdir()):
+            print(f"[data] {name}: папка уже есть, пропуск", flush=True)
+            continue
+        try:
+            import gdown  # type: ignore[import]
+            print(f"[data] Скачиваю папку {name}...", flush=True)
+            gdown.download_folder(
+                info["url"], output=str(ROOT), quiet=True, use_cookies=False
+            )
+            print(f"[data] {name}: готово", flush=True)
+        except ImportError:
+            print(f"[data] {name}: gdown не установлен. Запустите: pip install gdown", flush=True)
+        except Exception as exc:
+            print(f"[data] {name}: ошибка — {exc}", flush=True)
+
+
+@app.on_event("startup")
+def _on_startup() -> None:
+    _download_data_sources()
+
 
 def _safe_root_file(path_value: str) -> Path:
     path = Path(path_value)
