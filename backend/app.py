@@ -69,6 +69,7 @@ PRESENTATION_JOBS: dict[str, dict[str, Any]] = {}
 PRESENTATION_JOBS_LOCK = threading.Lock()
 AI_SELECTIONS: dict[str, dict[str, Any]] = {}
 AI_SELECTIONS_LOCK = threading.Lock()
+DIRECT_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _safe_root_file(path_value: str) -> Path:
@@ -1420,7 +1421,7 @@ def _request_ai_choice(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with DIRECT_HTTP_OPENER.open(request, timeout=timeout) as response:
             raw_text = response.read().decode("utf-8", errors="replace")
             try:
                 response_payload = json.loads(raw_text)
