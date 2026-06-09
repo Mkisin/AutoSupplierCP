@@ -82,8 +82,7 @@ def _download_data_sources() -> None:
 
     for name, info in config.get("sheets", {}).items():
         local_path = ROOT / info["local_file"]
-        if info.get("download_once") and local_path.exists():
-            print(f"[data] {name}: локальный файл есть, пропуск", flush=True)
+        if local_path.exists():
             continue
         try:
             print(f"[data] Скачиваю {name}...", flush=True)
@@ -107,8 +106,9 @@ def _download_data_sources() -> None:
         try:
             import gdown  # type: ignore[import]
             print(f"[data] Скачиваю папку {name}...", flush=True)
+            local_dir.mkdir(parents=True, exist_ok=True)
             gdown.download_folder(
-                info["url"], output=str(ROOT), quiet=True, use_cookies=False
+                info["url"], output=str(local_dir), quiet=True, use_cookies=False
             )
             print(f"[data] {name}: готово", flush=True)
         except ImportError:

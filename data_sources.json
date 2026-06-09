@@ -8,17 +8,17 @@
     "Каталог фотографий сетей": {
       "url": "https://docs.google.com/spreadsheets/d/1TdQYCrDE_oCnbNIwM2p7HE1m6ffLkOdM/export?format=xlsx",
       "local_file": "Каталог фотографий сетей.xlsx",
-      "download_once": false
+      "download_once": true
     },
     "Отзывы": {
       "url": "https://docs.google.com/spreadsheets/d/165DYMg-GFqSIzZyBD86i2LGF7QPoHdnT/export?format=xlsx",
       "local_file": "Отзывы.xlsx",
-      "download_once": false
+      "download_once": true
     },
     "Список сетей": {
       "url": "https://docs.google.com/spreadsheets/d/1KuQtk2C2bs_c824n3KprDsl6-7062-xG/export?format=xlsx",
       "local_file": "Список сетей.xlsx",
-      "download_once": false
+      "download_once": true
     }
   },
   "drive_folders": {
