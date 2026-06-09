@@ -77,6 +77,27 @@ BITRIX_JOBS: dict[str, dict[str, Any]] = {}
 BITRIX_JOBS_LOCK = threading.Lock()
 
 
+def _media_folder_stats(path: Path) -> dict[str, int]:
+    if not path.exists():
+        return {"files": 0, "images": 0, "dirs": 0}
+    image_suffixes = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
+    files = [item for item in path.rglob("*") if item.is_file()]
+    return {
+        "files": len(files),
+        "images": sum(1 for item in files if item.suffix.lower() in image_suffixes),
+        "dirs": sum(1 for item in path.rglob("*") if item.is_dir()),
+    }
+
+
+def _log_media_folder_stats(name: str, path: Path) -> None:
+    stats = _media_folder_stats(path)
+    print(
+        f"[data] {name}: найдено файлов={stats['files']}, "
+        f"изображений={stats['images']}, подпапок={stats['dirs']}",
+        flush=True,
+    )
+
+
 def _download_data_sources() -> None:
     if not DATA_SOURCES_FILE.exists():
         return
@@ -105,6 +126,7 @@ def _download_data_sources() -> None:
         local_dir = ROOT / info["local_dir"]
         if local_dir.exists() and any(local_dir.iterdir()):
             print(f"[data] {name}: папка уже есть, пропуск", flush=True)
+            _log_media_folder_stats(name, local_dir)
             continue
         try:
             import gdown  # type: ignore[import]
@@ -114,10 +136,12 @@ def _download_data_sources() -> None:
                 info["url"], output=str(local_dir), quiet=True, use_cookies=False
             )
             print(f"[data] {name}: готово", flush=True)
+            _log_media_folder_stats(name, local_dir)
         except ImportError:
             print(f"[data] {name}: gdown не установлен. Запустите: pip install gdown", flush=True)
         except Exception as exc:
             print(f"[data] {name}: ошибка — {exc}", flush=True)
+            _log_media_folder_stats(name, local_dir)
 
 
 @app.on_event("startup")

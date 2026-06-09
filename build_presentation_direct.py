@@ -182,15 +182,52 @@ def first_file(pattern):
     return next((path for path in files if image_ext(path)), None)
 
 
-def first_images(folder, count):
+def data_path(value):
+    return Path(str(value or "").strip().replace("\\", "/"))
+
+
+def iter_images(folder):
     folder_path = Path(folder)
     if not folder_path.exists():
         return []
-    files = sorted([
-        path for path in folder_path.iterdir()
-        if path.is_file() and image_ext(path)
-    ])
-    return files[:count]
+    return sorted(
+        [
+            path
+            for path in folder_path.rglob("*")
+            if path.is_file() and image_ext(path)
+        ],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def resolve_image_path(path):
+    candidate = data_path(path)
+    if not candidate.is_absolute():
+        candidate = Path(".") / candidate
+    if image_ext(candidate):
+        return candidate
+
+    search_roots = []
+    if len(candidate.parts) > 1:
+        search_roots.append(candidate.parent)
+    search_roots.append(Path("."))
+
+    seen = set()
+    for root in search_roots:
+        if not root.exists():
+            continue
+        root_key = str(root.resolve()).lower()
+        if root_key in seen:
+            continue
+        seen.add(root_key)
+        for match in root.rglob(candidate.name):
+            if image_ext(match):
+                return match
+    return candidate
+
+
+def first_images(folder, count):
+    return iter_images(folder)[:count]
 
 
 def cell_col(ref):
@@ -273,6 +310,7 @@ LOGO_ALIASES = {
     "мельник": ["melnik", "мельник"],
     "гельтек": ["geltek", "гельтек"],
     "titbit": ["titbit", "титбит"],
+    "увелка": ["uvelka", "увелка"],
 }
 
 
@@ -301,13 +339,7 @@ def score_file(path, needles):
 
 
 def best_image(folder, needles):
-    folder_path = Path(folder)
-    if not folder_path.exists():
-        return None
-    candidates = [
-        path for path in folder_path.iterdir()
-        if path.is_file() and image_ext(path)
-    ]
+    candidates = iter_images(folder)
     scored = [(score_file(path, needles), path) for path in candidates]
     scored = [item for item in scored if item[0] > 0]
     if not scored:
@@ -391,9 +423,7 @@ def catalog_records(path):
         file_value = record.get("Путь к файлу") or record.get("Файл") or record.get("Фото") or ""
         if not file_value:
             continue
-        path_value = Path(file_value)
-        if not path_value.is_absolute():
-            path_value = Path(".") / path_value
+        path_value = resolve_image_path(file_value)
         if image_ext(path_value):
             record["_path"] = path_value
             records.append(record)
@@ -681,9 +711,7 @@ def image_map(payload):
         mapping["{{pic1}}"] = pic1
         sources["{{pic1}}"] = str(pic1)
 
-    product_photo = Path(payload.get("product_photo", ""))
-    if product_photo and not product_photo.is_absolute():
-        product_photo = Path(".") / product_photo
+    product_photo = resolve_image_path(payload.get("product_photo", ""))
     if image_ext(product_photo):
         mapping["{{pic2}}"] = product_photo
         sources["{{pic2}}"] = str(product_photo)
@@ -748,9 +776,7 @@ def apply_selection_override(replacements, images, image_sources, selection):
         for token, path_value in override_images.items():
             if not isinstance(token, str) or not token.startswith("{{"):
                 continue
-            path = Path(str(path_value))
-            if not path.is_absolute():
-                path = Path(".") / path
+            path = resolve_image_path(path_value)
             if image_ext(path):
                 images[token] = path
                 image_sources[token] = str(path)
