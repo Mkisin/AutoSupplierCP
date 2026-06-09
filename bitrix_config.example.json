@@ -1,0 +1,19 @@
+{
+  "webhook_url": "https://ВАШ-ДОМЕН.bitrix24.ru/rest/1/ТОКЕН/",
+  "field_map": {
+    "companyName":                "COMPANY_ID",
+    "contactName":                "CONTACT_ID",
+    "contactPosition":            "CONTACT_ID",
+    "networkCategories":          "UF_CRM_XXXX",
+    "website":                    "UF_CRM_XXXX",
+    "country":                    "UF_CRM_XXXX",
+    "city":                       "UF_CRM_XXXX",
+    "productName":                "UF_CRM_XXXX",
+    "productCategory":            "UF_CRM_XXXX",
+    "priceCategory":              "UF_CRM_XXXX",
+    "productDescription":         "UF_CRM_XXXX",
+    "preferredNetworkCategories": "UF_CRM_XXXX",
+    "preferredNetworks":          "UF_CRM_XXXX",
+    "presentationFileField":      "UF_CRM_XXXX"
+  }
+}

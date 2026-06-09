@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -72,6 +72,9 @@ AI_SELECTIONS_LOCK = threading.Lock()
 DIRECT_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 DATA_SOURCES_FILE = ROOT / "data_sources.json"
+BITRIX_CONFIG_FILE = ROOT / "bitrix_config.json"
+BITRIX_JOBS: dict[str, dict[str, Any]] = {}
+BITRIX_JOBS_LOCK = threading.Lock()
 
 
 def _download_data_sources() -> None:
@@ -2042,3 +2045,216 @@ def image_preview(path: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Изображение не найдено")
     media_type = mimetypes.guess_type(target.name)[0]
     return FileResponse(target, media_type=media_type)
+
+
+# ── Битрикс24 интеграция ────────────────────────────────────────────────
+
+def _load_bitrix_config() -> dict[str, Any]:
+    if not BITRIX_CONFIG_FILE.exists():
+        raise RuntimeError(
+            "bitrix_config.json не найден. "
+            "Скопируйте bitrix_config.example.json → bitrix_config.json и заполните поля."
+        )
+    return json.loads(BITRIX_CONFIG_FILE.read_text(encoding="utf-8"))
+
+
+def _bitrix_call(webhook_url: str, method: str, params: dict[str, Any] | None = None) -> Any:
+    url = f"{webhook_url.rstrip('/')}/{method}.json"
+    body = json.dumps(params or {}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with DIRECT_HTTP_OPENER.open(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if "error" in data:
+        raise RuntimeError(
+            f"Битрикс24 API: {data['error']} — {data.get('error_description', '')}"
+        )
+    return data.get("result")
+
+
+def _bitrix_get_deal_data(deal_id: str, webhook_url: str, field_map: dict[str, str]) -> dict[str, Any]:
+    deal = _bitrix_call(webhook_url, "crm.deal.get", {"id": deal_id})
+    if not deal:
+        raise RuntimeError(f"Сделка {deal_id} не найдена в Битрикс24")
+
+    card: dict[str, Any] = {}
+
+    company_id = str(deal.get("COMPANY_ID") or "").strip()
+    if company_id and company_id != "0":
+        company = _bitrix_call(webhook_url, "crm.company.get", {"id": company_id}) or {}
+        card["companyName"] = str(company.get("TITLE") or "").strip()
+        webs = company.get("WEB") or []
+        if webs and not card.get("website"):
+            card["website"] = str(webs[0].get("VALUE", "")).strip()
+
+    contact_id = str(deal.get("CONTACT_ID") or "").strip()
+    if contact_id and contact_id != "0":
+        contact = _bitrix_call(webhook_url, "crm.contact.get", {"id": contact_id}) or {}
+        name_parts = [contact.get("NAME", ""), contact.get("LAST_NAME", "")]
+        card["contactName"] = " ".join(p for p in name_parts if p).strip()
+        card["contactPosition"] = str(contact.get("WORK_POSITION") or "").strip()
+
+    for app_field, bitrix_field in field_map.items():
+        if app_field in ("companyName", "contactName", "contactPosition", "presentationFileField"):
+            continue
+        if not bitrix_field or bitrix_field == "UF_CRM_XXXX":
+            continue
+        raw = deal.get(bitrix_field)
+        if raw is None:
+            continue
+        card[app_field] = "; ".join(str(v) for v in raw if v) if isinstance(raw, list) else str(raw).strip()
+
+    return card
+
+
+def _bitrix_upload_pptx(webhook_url: str, deal_id: str, pptx_path: Path, file_field: str) -> None:
+    if not file_field or file_field == "UF_CRM_XXXX":
+        raise RuntimeError("presentationFileField не настроен в bitrix_config.json")
+    import base64
+    content_b64 = base64.b64encode(pptx_path.read_bytes()).decode("ascii")
+    _bitrix_call(
+        webhook_url,
+        "crm.deal.update",
+        {
+            "id": deal_id,
+            "fields": {file_field: {"fileData": [pptx_path.name, content_b64]}},
+        },
+    )
+
+
+def _default_ai_provider() -> str:
+    for provider in ("deepseek", "openai"):
+        settings = _ai_provider_settings(provider)
+        if settings.get("api_key"):
+            return provider
+    return "rules"
+
+
+def _set_bitrix_job(job_id: str, **values: Any) -> None:
+    with BITRIX_JOBS_LOCK:
+        job = BITRIX_JOBS.setdefault(job_id, {})
+        job.update(values)
+        job["updatedAt"] = datetime.now().isoformat(timespec="seconds")
+
+
+def _run_bitrix_pipeline(job_id: str, deal_id: str) -> None:
+    try:
+        _set_bitrix_job(job_id, status="running", progress=5, message="Загружаю данные сделки из Битрикс24")
+
+        cfg = _load_bitrix_config()
+        webhook_url: str = cfg["webhook_url"]
+        field_map: dict[str, str] = cfg.get("field_map", {})
+        file_field: str = field_map.get("presentationFileField", "")
+
+        card_data = _bitrix_get_deal_data(deal_id, webhook_url, field_map)
+        company = str(card_data.get("companyName") or "").strip()
+        if not company:
+            raise RuntimeError("Не удалось получить название компании из сделки Битрикс24")
+
+        _set_bitrix_job(job_id, progress=15, message=f"Сохраняю карточку: {company}")
+
+        for fallback_field, fallback_value in (("companyType", "Производитель"),):
+            if not card_data.get(fallback_field):
+                card_data[fallback_field] = fallback_value
+
+        try:
+            _save_card_row(card_data, None, None)
+        except Exception as exc:
+            print(f"[bitrix] предупреждение: не удалось сохранить карточку: {exc}", flush=True)
+
+        _set_bitrix_job(job_id, progress=25, message="Подготавливаю материалы для ИИ")
+
+        try:
+            report = _run_presentation_dry_run_with_override(company, card_data)
+        except HTTPException as exc:
+            raise RuntimeError(str(exc.detail)) from exc
+
+        ai_provider = _default_ai_provider()
+        default_selection = _default_selection_from_report(report, ai_provider)
+
+        _set_bitrix_job(job_id, progress=45, message=f"Запрашиваю ИИ ({ai_provider})")
+
+        try:
+            final_selection = _call_ai_final_selector(ai_provider, report, default_selection)
+        except HTTPException as exc:
+            print(f"[bitrix] ИИ недоступен, использую правила: {exc.detail}", flush=True)
+            final_selection = default_selection
+
+        _set_bitrix_job(job_id, progress=60, message="Собираю презентацию")
+
+        pptx_job_id = uuid.uuid4().hex
+        _set_presentation_job(
+            pptx_job_id,
+            id=pptx_job_id,
+            companyName=company,
+            status="queued",
+            progress=5,
+            message="Задача от Битрикс24",
+        )
+        _run_presentation_job(pptx_job_id, company, final_selection)
+        pptx_job = _get_presentation_job(pptx_job_id)
+
+        if pptx_job.get("status") != "done":
+            raise RuntimeError(pptx_job.get("error") or "Презентация не была собрана")
+
+        pptx_path = ROOT / pptx_job["fileName"]
+
+        _set_bitrix_job(job_id, progress=90, message="Загружаю презентацию в Битрикс24")
+
+        _bitrix_upload_pptx(webhook_url, deal_id, pptx_path, file_field)
+
+        _set_bitrix_job(
+            job_id,
+            status="done",
+            progress=100,
+            message="Презентация готова и загружена в сделку",
+            fileName=pptx_job["fileName"],
+            downloadUrl=pptx_job.get("downloadUrl"),
+        )
+
+    except Exception as exc:
+        _set_bitrix_job(job_id, status="error", progress=0, message=str(exc), error=str(exc))
+        print(f"[bitrix] ошибка pipeline: {exc}", flush=True)
+
+
+@app.post("/api/bitrix/webhook")
+async def bitrix_webhook(request: Request) -> dict[str, Any]:
+    deal_id = ""
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        deal_id = str(body.get("deal_id") or body.get("DEAL_ID") or body.get("id") or "").strip()
+    else:
+        form = await request.form()
+        deal_id = str(form.get("deal_id") or form.get("DEAL_ID") or form.get("id") or "").strip()
+
+    if not deal_id:
+        raise HTTPException(status_code=400, detail="deal_id не передан")
+
+    job_id = uuid.uuid4().hex
+    _set_bitrix_job(
+        job_id,
+        id=job_id,
+        deal_id=deal_id,
+        status="queued",
+        progress=0,
+        message="Задача поставлена в очередь",
+    )
+    threading.Thread(target=_run_bitrix_pipeline, args=(job_id, deal_id), daemon=True).start()
+    return {"ok": True, "job_id": job_id}
+
+
+@app.get("/api/bitrix/jobs/{job_id}")
+def bitrix_job_status(job_id: str) -> dict[str, Any]:
+    with BITRIX_JOBS_LOCK:
+        job = BITRIX_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    return dict(job)
