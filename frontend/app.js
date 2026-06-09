@@ -432,7 +432,7 @@ function renderCandidateOptions(host, candidates, kind, requiredCount, selectedI
 
   candidates.forEach((option, index) => {
     const label = document.createElement("label");
-    label.className = `ai-option-card${kind === "photo" ? " is-photo" : ""}`;
+    label.className = `ai-option-card${kind === "photo" ? " is-photo" : kind === "review" && option.logo_path ? " is-review-logo" : ""}`;
     const input = document.createElement("input");
     input.type = "checkbox";
     input.value = option.id;
@@ -450,6 +450,13 @@ function renderCandidateOptions(host, candidates, kind, requiredCount, selectedI
       preview.className = "ai-option-preview";
       preview.src = previewUrlForPath(option.path);
       preview.alt = option.network || `Фото ${index + 1}`;
+      label.append(preview);
+    }
+    if (kind === "review" && option.logo_path) {
+      const preview = document.createElement("img");
+      preview.className = "ai-option-preview is-logo";
+      preview.src = previewUrlForPath(option.logo_path);
+      preview.alt = option.company || `Логотип ${index + 1}`;
       label.append(preview);
     }
 
@@ -581,7 +588,14 @@ function renderAiFinalPhotoCard(item, photoId, index) {
 
 function renderAiFinalReviewCard(review, reviewId, index) {
   const card = document.createElement("article");
-  card.className = "ai-final-card";
+  card.className = `ai-final-card${review?.logo_path ? " is-review-logo" : ""}`;
+  if (review?.logo_path) {
+    const preview = document.createElement("img");
+    preview.className = "ai-final-preview is-logo";
+    preview.src = previewUrlForPath(review.logo_path);
+    preview.alt = review.company || `Логотип ${index + 1}`;
+    card.append(preview);
+  }
   const body = document.createElement("div");
   body.className = "ai-final-card-body";
   const title = document.createElement("strong");

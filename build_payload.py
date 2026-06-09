@@ -6,12 +6,23 @@ import sys
 import zipfile
 import xml.etree.ElementTree as ET
 from argparse import ArgumentParser
+from pathlib import Path
 
 NS = {
     "a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
 }
+
+LOGO_DIR = Path("Логотипы поставщиков")
+LOGO_FIELD_NAMES = (
+    "Логотип",
+    "Файл логотипа",
+    "Логотип компании",
+    "Название файла логотипа",
+    "logo",
+    "logo_file",
+)
 
 
 def cell_col(ref):
@@ -267,6 +278,33 @@ def split_tags(value):
     }
 
 
+def review_logo_file(record):
+    for field_name in LOGO_FIELD_NAMES:
+        value = str(record.get(field_name, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def review_logo_path(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    path = Path(value.replace("\\", "/"))
+    if not path.is_absolute() and len(path.parts) == 1:
+        path = LOGO_DIR / path
+    search_name = path.name.lower()
+    search_stem = path.stem.lower()
+    search_root = path.parent if path.parent != Path(".") else LOGO_DIR
+    if search_root.exists():
+        for match in search_root.rglob("*"):
+            if not match.is_file():
+                continue
+            if match.name.lower() == search_name or match.stem.lower() == search_stem:
+                return str(match)
+    return str(path)
+
+
 def universality_rank(value):
     text = str(value or "").strip().lower()
     match = re.match(r"(\d+)", text)
@@ -297,6 +335,7 @@ def review_candidates(category_value, company_type_value="", price_category_valu
         review_price_segment = record.get("\u0426\u0435\u043d\u043e\u0432\u043e\u0439 \u0441\u0435\u0433\u043c\u0435\u043d\u0442", "")
         review_universality = record.get("\u0423\u0440\u043e\u0432\u0435\u043d\u044c \u0443\u043d\u0438\u0432\u0435\u0440\u0441\u0430\u043b\u044c\u043d\u043e\u0441\u0442\u0438", "")
         review_keywords = record.get("\u041a\u043b\u044e\u0447\u0435\u0432\u044b\u0435 \u0441\u043b\u043e\u0432\u0430 \u043f\u043e\u0434\u0431\u043e\u0440\u0430", "")
+        logo_file = review_logo_file(record)
         if not review_company and not review_text:
             continue
 
@@ -366,6 +405,8 @@ def review_candidates(category_value, company_type_value="", price_category_valu
             "company": review_company,
             "person": review_person,
             "text": review_text,
+            "logo_file": logo_file,
+            "logo_path": review_logo_path(logo_file),
             "group": review_group,
             "company_type": review_company_type,
             "networks": review_networks,
@@ -389,6 +430,8 @@ def review_result(candidate, top_candidates):
         "company": candidate["company"],
         "person": candidate["person"],
         "text": candidate["text"],
+        "logo_file": candidate.get("logo_file", ""),
+        "logo_path": candidate.get("logo_path", ""),
         "source": source,
         "row": candidate["row"],
         "score": candidate["score"],
@@ -409,6 +452,8 @@ def review_option_payload(candidate):
         "company": candidate["company"],
         "person": candidate["person"],
         "text": candidate["text"],
+        "logo_file": candidate.get("logo_file", ""),
+        "logo_path": candidate.get("logo_path", ""),
         "group": candidate["group"],
         "company_type": candidate["company_type"],
         "networks": candidate["networks"],

@@ -223,6 +223,10 @@ def resolve_image_path(path):
         for match in root.rglob(candidate.name):
             if image_ext(match):
                 return match
+        if not candidate.suffix:
+            for match in root.rglob("*"):
+                if match.is_file() and match.stem.lower() == candidate.name.lower() and image_ext(match):
+                    return match
     return candidate
 
 
@@ -346,6 +350,23 @@ def best_image(folder, needles):
         return None
     scored.sort(key=lambda item: (-item[0], item[1].name))
     return scored[0][1]
+
+
+def review_logo_image(review):
+    for key in ("logo_path", "logo_file", "logo"):
+        value = str((review or {}).get(key, "") or "").strip()
+        if not value:
+            continue
+        path = resolve_image_path(value)
+        if not image_ext(path) and len(data_path(value).parts) == 1:
+            path = resolve_image_path(Path("Логотипы поставщиков") / value)
+        if image_ext(path):
+            return path
+
+    company = str((review or {}).get("company", "") or "").strip()
+    if not company:
+        return None
+    return best_image("Логотипы поставщиков", logo_needles(company))
 
 
 def words(value):
@@ -732,7 +753,7 @@ def image_map(payload):
             sources[f"{token}_selection"] = photo_report[report_key]
 
     for index, review in enumerate(payload.get("review_sources", [])[:3], start=1):
-        logo = best_image("Логотипы поставщиков", logo_needles(review.get("company", "")))
+        logo = review_logo_image(review)
         if logo:
             token = f"{{{{logo{index}}}}}"
             mapping[token] = logo
@@ -740,7 +761,23 @@ def image_map(payload):
     return mapping, sources, photo_candidates, selected_photo_ids, photo_tokens
 
 
-def review_logo_mapping_from_replacements(replacements):
+def selected_review_options(selection):
+    if not isinstance(selection, dict):
+        return []
+    candidates = {
+        str(item.get("id", "")): item
+        for item in selection.get("review_candidates", [])
+        if isinstance(item, dict)
+    }
+    selected = []
+    for selected_id in selection.get("selected_review_ids", []):
+        item = candidates.get(str(selected_id))
+        if item:
+            selected.append(item)
+    return selected
+
+
+def review_logo_mapping_from_replacements(replacements, selected_reviews=None):
     mapping = {}
     sources = {}
     review_company_tokens = {
@@ -748,12 +785,20 @@ def review_logo_mapping_from_replacements(replacements):
         2: "{{block9}}",
         3: "{{block12}}",
     }
+    selected_reviews = selected_reviews or []
     for index, company_token in review_company_tokens.items():
-        company = str(replacements.get(company_token, "")).strip()
         logo_token = f"{{{{logo{index}}}}}"
+        review = selected_reviews[index - 1] if index <= len(selected_reviews) else {}
+        logo = review_logo_image(review) if review else None
+        if logo:
+            mapping[logo_token] = logo
+            sources[logo_token] = str(logo)
+            continue
+
+        company = str(replacements.get(company_token, "")).strip()
         if not company:
             continue
-        logo = best_image("Логотипы поставщиков", logo_needles(company))
+        logo = review_logo_image({"company": company})
         if not logo:
             continue
         mapping[logo_token] = logo
@@ -762,7 +807,7 @@ def review_logo_mapping_from_replacements(replacements):
 
 
 def apply_selection_override(replacements, images, image_sources, selection):
-    if not isinstance(selection, dict):
+    if not isinstance(selection, dict) or not selection:
         return replacements, images, image_sources
 
     override_replacements = selection.get("replacements")
@@ -785,7 +830,10 @@ def apply_selection_override(replacements, images, image_sources, selection):
     for token in ("{{logo1}}", "{{logo2}}", "{{logo3}}"):
         images.pop(token, None)
         image_sources.pop(token, None)
-    logo_mapping, logo_sources = review_logo_mapping_from_replacements(replacements)
+    logo_mapping, logo_sources = review_logo_mapping_from_replacements(
+        replacements,
+        selected_review_options(selection),
+    )
     images.update(logo_mapping)
     image_sources.update(logo_sources)
 
