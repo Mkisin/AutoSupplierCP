@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -75,6 +76,22 @@ DATA_SOURCES_FILE = ROOT / "data_sources.json"
 BITRIX_CONFIG_FILE = ROOT / "bitrix_config.json"
 BITRIX_JOBS: dict[str, dict[str, Any]] = {}
 BITRIX_JOBS_LOCK = threading.Lock()
+BITRIX_FIELD_MAP = {
+    "companyName": "COMPANY_ID",
+    "contactName": "CONTACT_ID",
+    "contactPosition": "CONTACT_ID",
+    "networkCategories": "UF_CRM_1662544467901",
+    "website": "UF_CRM_1653999914176",
+    "country": "UF_CRM_1660131191090",
+    "city": "UF_CRM_1653999902075",
+    "productName": "UF_CRM_1654516980198",
+    "productCategory": "UF_CRM_1565770347",
+    "priceCategory": "UF_CRM_1654001339275",
+    "productDescription": "UF_CRM_5CBD83328D86E",
+    "preferredNetworkCategories": "UF_CRM_1669628251",
+    "preferredNetworks": "UF_CRM_1654093180996",
+    "presentationFileField": "UF_CRM_1745830954",
+}
 
 
 def _media_folder_stats(path: Path) -> dict[str, int]:
@@ -2074,12 +2091,34 @@ def image_preview(path: str) -> FileResponse:
 # ── Битрикс24 интеграция ────────────────────────────────────────────────
 
 def _load_bitrix_config() -> dict[str, Any]:
-    if not BITRIX_CONFIG_FILE.exists():
+    cfg: dict[str, Any] = {}
+    if BITRIX_CONFIG_FILE.exists():
+        cfg = json.loads(BITRIX_CONFIG_FILE.read_text(encoding="utf-8"))
+
+    webhook_url = os.environ.get("BITRIX_WEBHOOK_URL", "").strip() or str(cfg.get("webhook_url", "")).strip()
+    if not webhook_url or "ВАШ-ДОМЕН" in webhook_url or "WEBHOOK_TOKEN" in webhook_url or "ТОКЕН" in webhook_url:
         raise RuntimeError(
-            "bitrix_config.json не найден. "
-            "Скопируйте bitrix_config.example.json → bitrix_config.json и заполните поля."
+            "BITRIX_WEBHOOK_URL не настроен. "
+            "На Render добавьте переменную окружения с URL входящего вебхука Битрикс24."
         )
-    return json.loads(BITRIX_CONFIG_FILE.read_text(encoding="utf-8"))
+
+    field_map = dict(BITRIX_FIELD_MAP)
+    field_map.update({k: v for k, v in (cfg.get("field_map") or {}).items() if v})
+    return {"webhook_url": webhook_url, "field_map": field_map}
+
+
+def _verify_bitrix_inbound_token(request: Request) -> None:
+    expected = os.environ.get("BITRIX_INBOUND_TOKEN", "").strip()
+    if not expected:
+        return
+    provided = (
+        request.query_params.get("token")
+        or request.headers.get("X-Bitrix-Token")
+        or request.headers.get("X-AutoSupplierCP-Token")
+        or ""
+    ).strip()
+    if not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=403, detail="Неверный токен входящего webhook")
 
 
 def _bitrix_call(webhook_url: str, method: str, params: dict[str, Any] | None = None) -> Any:
@@ -2100,10 +2139,41 @@ def _bitrix_call(webhook_url: str, method: str, params: dict[str, Any] | None = 
     return data.get("result")
 
 
+def _bitrix_field_value_to_text(fields_meta: dict[str, Any], field_id: str, raw: Any) -> str:
+    if raw is None:
+        return ""
+
+    meta = fields_meta.get(field_id) or {}
+    enum_values = {
+        str(item.get("ID", "")): str(item.get("VALUE", ""))
+        for item in meta.get("items", []) or []
+    }
+
+    def scalar_to_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if enum_values:
+            mapped = enum_values.get(str(value))
+            if mapped:
+                return mapped
+        if isinstance(value, dict):
+            for key in ("VALUE", "value", "TEXT", "text", "ADDRESS", "address"):
+                normalized = str(value.get(key) or "").strip()
+                if normalized:
+                    return normalized
+            return "; ".join(str(v).strip() for v in value.values() if str(v or "").strip())
+        return str(value).strip()
+
+    if isinstance(raw, list):
+        return "; ".join(text for value in raw if (text := scalar_to_text(value)))
+    return scalar_to_text(raw)
+
+
 def _bitrix_get_deal_data(deal_id: str, webhook_url: str, field_map: dict[str, str]) -> dict[str, Any]:
     deal = _bitrix_call(webhook_url, "crm.deal.get", {"id": deal_id})
     if not deal:
         raise RuntimeError(f"Сделка {deal_id} не найдена в Битрикс24")
+    fields_meta = _bitrix_call(webhook_url, "crm.deal.fields", {}) or {}
 
     card: dict[str, Any] = {}
 
@@ -2130,7 +2200,9 @@ def _bitrix_get_deal_data(deal_id: str, webhook_url: str, field_map: dict[str, s
         raw = deal.get(bitrix_field)
         if raw is None:
             continue
-        card[app_field] = "; ".join(str(v) for v in raw if v) if isinstance(raw, list) else str(raw).strip()
+        value = _bitrix_field_value_to_text(fields_meta, bitrix_field, raw)
+        if value:
+            card[app_field] = value
 
     return card
 
@@ -2247,6 +2319,8 @@ def _run_bitrix_pipeline(job_id: str, deal_id: str) -> None:
 
 @app.post("/api/bitrix/webhook")
 async def bitrix_webhook(request: Request) -> dict[str, Any]:
+    _verify_bitrix_inbound_token(request)
+
     deal_id = ""
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
@@ -2276,7 +2350,9 @@ async def bitrix_webhook(request: Request) -> dict[str, Any]:
 
 
 @app.get("/api/bitrix/jobs/{job_id}")
-def bitrix_job_status(job_id: str) -> dict[str, Any]:
+def bitrix_job_status(job_id: str, request: Request) -> dict[str, Any]:
+    _verify_bitrix_inbound_token(request)
+
     with BITRIX_JOBS_LOCK:
         job = BITRIX_JOBS.get(job_id)
     if not job:

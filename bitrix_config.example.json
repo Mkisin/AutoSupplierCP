@@ -1,19 +1,18 @@
 {
-  "webhook_url": "https://ВАШ-ДОМЕН.bitrix24.ru/rest/1/ТОКЕН/",
   "field_map": {
-    "companyName":                "COMPANY_ID",
-    "contactName":                "CONTACT_ID",
-    "contactPosition":            "CONTACT_ID",
-    "networkCategories":          "UF_CRM_XXXX",
-    "website":                    "UF_CRM_XXXX",
-    "country":                    "UF_CRM_XXXX",
-    "city":                       "UF_CRM_XXXX",
-    "productName":                "UF_CRM_XXXX",
-    "productCategory":            "UF_CRM_XXXX",
-    "priceCategory":              "UF_CRM_XXXX",
-    "productDescription":         "UF_CRM_XXXX",
-    "preferredNetworkCategories": "UF_CRM_XXXX",
-    "preferredNetworks":          "UF_CRM_XXXX",
-    "presentationFileField":      "UF_CRM_XXXX"
+    "companyName": "COMPANY_ID",
+    "contactName": "CONTACT_ID",
+    "contactPosition": "CONTACT_ID",
+    "networkCategories": "UF_CRM_1662544467901",
+    "website": "UF_CRM_1653999914176",
+    "country": "UF_CRM_1660131191090",
+    "city": "UF_CRM_1653999902075",
+    "productName": "UF_CRM_1654516980198",
+    "productCategory": "UF_CRM_1565770347",
+    "priceCategory": "UF_CRM_1654001339275",
+    "productDescription": "UF_CRM_5CBD83328D86E",
+    "preferredNetworkCategories": "UF_CRM_1669628251",
+    "preferredNetworks": "UF_CRM_1654093180996",
+    "presentationFileField": "UF_CRM_1745830954"
   }
 }
