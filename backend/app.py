@@ -2317,21 +2317,65 @@ def _run_bitrix_pipeline(job_id: str, deal_id: str) -> None:
         print(f"[bitrix] ошибка pipeline: {exc}", flush=True)
 
 
+def _extract_bitrix_deal_id(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+
+    def normalize(value: Any) -> str:
+        if isinstance(value, list):
+            for item in value:
+                normalized = normalize(item)
+                if normalized:
+                    return normalized
+            return ""
+        if isinstance(value, dict):
+            return _extract_bitrix_deal_id(value)
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        match = re.search(r"(?:DEAL_|D_)?(\d+)$", raw, re.IGNORECASE)
+        return match.group(1) if match else raw
+
+    for key in ("deal_id", "DEAL_ID", "id", "ID", "document_id", "DOCUMENT_ID"):
+        normalized = normalize(payload.get(key))
+        if normalized:
+            return normalized
+
+    for key in ("data", "DATA", "FIELDS", "fields"):
+        normalized = normalize(payload.get(key))
+        if normalized:
+            return normalized
+
+    for key, value in payload.items():
+        if str(key).lower() in {
+            "data[fields][id]",
+            "data[fields][deal_id]",
+            "document_id[2]",
+            "document_id",
+        }:
+            normalized = normalize(value)
+            if normalized:
+                return normalized
+    return ""
+
+
 @app.post("/api/bitrix/webhook")
 async def bitrix_webhook(request: Request) -> dict[str, Any]:
     _verify_bitrix_inbound_token(request)
 
-    deal_id = ""
+    deal_id = _extract_bitrix_deal_id(dict(request.query_params))
     content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
+    if deal_id:
+        pass
+    elif "application/json" in content_type:
         try:
             body = await request.json()
         except Exception:
             body = {}
-        deal_id = str(body.get("deal_id") or body.get("DEAL_ID") or body.get("id") or "").strip()
+        deal_id = _extract_bitrix_deal_id(body)
     else:
         form = await request.form()
-        deal_id = str(form.get("deal_id") or form.get("DEAL_ID") or form.get("id") or "").strip()
+        deal_id = _extract_bitrix_deal_id(dict(form))
 
     if not deal_id:
         raise HTTPException(status_code=400, detail="deal_id не передан")
