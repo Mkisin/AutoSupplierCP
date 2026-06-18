@@ -1,4 +1,5 @@
 ﻿import json
+import html
 import mimetypes
 import os
 import re
@@ -6,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 import zipfile
 import xml.etree.ElementTree as ET
 from argparse import ArgumentParser
@@ -23,6 +25,7 @@ IMAGE_TOKENS = [
     "{{pic1}}", "{{pic2}}", "{{pic3}}", "{{pic4}}", "{{pic5}}", "{{pic6}}", "{{pic7}}",
     "{{logo1}}", "{{logo2}}", "{{logo3}}",
 ]
+DRIVE_FOLDER_INDEX_CACHE = {}
 
 ET.register_namespace("p", P)
 ET.register_namespace("a", A)
@@ -186,6 +189,99 @@ def data_path(value):
     return Path(str(value or "").strip().replace("\\", "/"))
 
 
+def load_data_sources():
+    path = Path("data_sources.json")
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def drive_folder_url_for_path(path):
+    if path.is_absolute() or len(path.parts) < 2:
+        return ""
+    root_name = path.parts[0].casefold()
+    config = load_data_sources()
+    for info in (config.get("drive_folders") or {}).values():
+        local_dir = str(info.get("local_dir", "")).strip().replace("\\", "/")
+        if local_dir and Path(local_dir).name.casefold() == root_name:
+            return str(info.get("url", "")).strip()
+    return ""
+
+
+def drive_folder_index(folder_url):
+    if not folder_url:
+        return {}
+    if folder_url in DRIVE_FOLDER_INDEX_CACHE:
+        return DRIVE_FOLDER_INDEX_CACHE[folder_url]
+
+    try:
+        request = urllib.request.Request(folder_url, headers={"User-Agent": "Mozilla/5.0 AutoSupplierCP"})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            page = html.unescape(response.read().decode("utf-8", errors="replace"))
+    except Exception:
+        DRIVE_FOLDER_INDEX_CACHE[folder_url] = {}
+        return {}
+
+    index = {}
+    pattern = r'aria-label="([^"]+?)".{0,800}?ssk=[\'\"][^\'\"]*?:([A-Za-z0-9_-]{20,})-\d+-\d+'
+    for match in re.finditer(pattern, page, re.DOTALL):
+        label = match.group(1).strip()
+        file_id = match.group(2).strip()
+        for suffix in (" Image Shared", " Image", " Shared"):
+            if label.endswith(suffix):
+                label = label[: -len(suffix)].strip()
+        if label and file_id:
+            index[label.casefold()] = file_id
+
+    DRIVE_FOLDER_INDEX_CACHE[folder_url] = index
+    return index
+
+
+def ensure_drive_file(path):
+    if path.exists() and path.is_file():
+        return path
+    folder_url = drive_folder_url_for_path(path)
+    if not folder_url:
+        return path
+    index = drive_folder_index(folder_url)
+    file_id = index.get(path.name.casefold())
+    if not file_id:
+        wanted = re.sub(r"[^a-zа-я0-9]+", " ", path.stem.casefold()).strip()
+        scored = []
+        for label, candidate_id in index.items():
+            candidate = re.sub(r"[^a-zа-я0-9]+", " ", Path(label).stem.casefold()).strip()
+            if not wanted or not candidate:
+                continue
+            if wanted in candidate or candidate in wanted:
+                scored.append((0, len(candidate), candidate_id))
+                continue
+            wanted_words = {word for word in wanted.split() if len(word) >= 3}
+            candidate_words = {word for word in candidate.split() if len(word) >= 3}
+            overlap = wanted_words & candidate_words
+            if overlap:
+                scored.append((-len(overlap), len(candidate), candidate_id))
+        if scored:
+            scored.sort()
+            file_id = scored[0][2]
+    if not file_id:
+        return path
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        url = f"https://drive.usercontent.google.com/download?id={file_id}"
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 AutoSupplierCP"})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            tmp.write_bytes(response.read())
+        tmp.replace(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+    return path
+
+
 def iter_images(folder):
     folder_path = Path(folder)
     if not folder_path.exists():
@@ -204,6 +300,7 @@ def resolve_image_path(path):
     candidate = data_path(path)
     if not candidate.is_absolute():
         candidate = Path(".") / candidate
+    candidate = ensure_drive_file(candidate)
     if image_ext(candidate):
         return candidate
 
@@ -402,7 +499,7 @@ def category_terms(value):
 def split_tags(value):
     return {
         item.strip().lower()
-        for item in re.split(r"[;,]", str(value or ""))
+        for item in re.split(r"[;,\n\r]+", str(value or ""))
         if item.strip()
     }
 
@@ -444,10 +541,11 @@ def catalog_records(path):
         file_value = record.get("Путь к файлу") or record.get("Файл") or record.get("Фото") or ""
         if not file_value:
             continue
-        path_value = resolve_image_path(file_value)
-        if image_ext(path_value):
-            record["_path"] = path_value
-            records.append(record)
+        path_value = data_path(file_value)
+        if not path_value.is_absolute():
+            path_value = Path(".") / path_value
+        record["_path"] = path_value
+        records.append(record)
     return records
 
 
@@ -582,7 +680,7 @@ def choose_network_photos(payload, count):
             "score": match[0] if match else 0,
             "reason": match[4] if match else "",
         }
-    return [record["_path"] for record in selected[:count]], report
+    return [resolve_image_path(record["_path"]) for record in selected[:count]], report
 
 
 def choose_network_photo_candidates(payload, selected_count, candidate_count=12):
@@ -693,6 +791,7 @@ def choose_network_photo_candidates(payload, selected_count, candidate_count=12)
     for index, (score, record, reason) in enumerate(candidate_records[:candidate_count], start=1):
         candidate_id = f"photo-{index}"
         path_to_id[str(record["_path"].resolve()).lower()] = candidate_id
+        preferred_match = preferred_network_matches(record, preferred)
         candidates.append(
             {
                 "id": candidate_id,
@@ -704,12 +803,13 @@ def choose_network_photo_candidates(payload, selected_count, candidate_count=12)
                 "price_segment": record.get("Ценовой сегмент", ""),
                 "priority": record.get("Приоритет", ""),
                 "universality": record.get("Уровень универсальности", ""),
+                "preferred_match": preferred_match,
                 "score": score,
-                "reason": reason,
+                "reason": (reason + "; обязательная предпочтительная сеть") if preferred_match else reason,
             }
         )
 
-    selected_paths = [record["_path"] for _, record, _ in selected_records[:selected_count]]
+    selected_paths = [resolve_image_path(record["_path"]) for _, record, _ in selected_records[:selected_count]]
     selected_ids = []
     report = {}
     for offset, (score, record, reason) in enumerate(selected_records[:selected_count], start=1):
@@ -1142,3 +1242,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

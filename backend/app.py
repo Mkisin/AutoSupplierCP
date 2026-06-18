@@ -139,6 +139,10 @@ def _download_data_sources() -> None:
         except Exception as exc:
             print(f"[data] {name}: ошибка — {exc}", flush=True)
 
+    if os.environ.get("DOWNLOAD_DRIVE_FOLDERS", "").strip().lower() not in {"1", "true", "yes"}:
+        print("[data] Drive-папки не скачиваются на старте; файлы будут загружаться по требованию", flush=True)
+        return
+
     for name, info in config.get("drive_folders", {}).items():
         local_dir = ROOT / info["local_dir"]
         if local_dir.exists() and any(local_dir.iterdir()):
@@ -1274,6 +1278,45 @@ def _normalize_selected_ids(
     return selected[:required_count]
 
 
+def _normalize_photo_selected_ids(
+    requested_ids: list[str] | None,
+    candidates: list[dict[str, Any]],
+    default_ids: list[str],
+    required_count: int,
+) -> list[str]:
+    preferred_ids = [
+        str(item.get("id", "")).strip()
+        for item in candidates
+        if item.get("preferred_match") and str(item.get("id", "")).strip()
+    ]
+    if not preferred_ids:
+        return _normalize_selected_ids(requested_ids, candidates, default_ids, required_count)
+
+    locked_ids = []
+    for item_id in default_ids + preferred_ids:
+        normalized = str(item_id).strip()
+        if normalized in preferred_ids and normalized not in locked_ids:
+            locked_ids.append(normalized)
+        if len(locked_ids) >= required_count:
+            return locked_ids[:required_count]
+
+    valid_ids = {str(item.get("id", "")) for item in candidates if item.get("id")}
+    selected = list(locked_ids)
+    for item_id in requested_ids or []:
+        normalized = str(item_id).strip()
+        if normalized and normalized in valid_ids and normalized not in selected:
+            selected.append(normalized)
+        if len(selected) >= required_count:
+            break
+    for item_id in default_ids:
+        normalized = str(item_id).strip()
+        if normalized and normalized in valid_ids and normalized not in selected:
+            selected.append(normalized)
+        if len(selected) >= required_count:
+            break
+    return selected[:required_count]
+
+
 def _build_selection_from_choices(
     base_selection: dict[str, Any],
     photo_ids: list[str] | None = None,
@@ -1291,7 +1334,7 @@ def _build_selection_from_choices(
     required_photo_count = int(base_selection.get("required_photo_count") or len(photo_tokens) or 0)
     required_review_count = int(base_selection.get("required_review_count") or 3)
 
-    selection["selected_photo_ids"] = _normalize_selected_ids(
+    selection["selected_photo_ids"] = _normalize_photo_selected_ids(
         photo_ids,
         selection["photo_candidates"],
         [str(item) for item in (base_selection.get("selected_photo_ids") or [])],
@@ -1442,7 +1485,7 @@ def _read_ai_prompt() -> str:
 def _split_form_tags(value: Any) -> list[str]:
     result = []
     seen = set()
-    for item in re.split(r"[;,]", str(value or "")):
+    for item in re.split(r"[;,\n\r]+", str(value or "")):
         normalized = item.strip()
         key = normalized.casefold()
         if normalized and key not in seen:
