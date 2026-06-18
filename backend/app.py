@@ -180,6 +180,35 @@ def _safe_root_file(path_value: str) -> Path:
     return resolved
 
 
+def _resolve_preview_image(path_value: str) -> tuple[Path, str | None]:
+    target = _safe_root_file(path_value)
+    if target.exists() and target.is_file():
+        try:
+            from build_presentation_direct import image_ext
+
+            return target, image_ext(target)
+        except Exception:
+            return target, None
+
+    try:
+        relative_path = target.relative_to(ROOT.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Некорректный путь к файлу") from exc
+
+    try:
+        from build_presentation_direct import image_ext, resolve_image_path
+
+        resolved = resolve_image_path(relative_path)
+        resolved = _safe_root_file(str(resolved))
+        actual_ext = image_ext(resolved)
+    except HTTPException:
+        raise
+    except Exception:
+        return target, None
+
+    return resolved, actual_ext
+
+
 def _set_presentation_job(job_id: str, **values: Any) -> None:
     with PRESENTATION_JOBS_LOCK:
         job = PRESENTATION_JOBS.setdefault(job_id, {})
@@ -2124,10 +2153,18 @@ def photo(filename: str) -> FileResponse:
 
 @app.get("/api/image-preview")
 def image_preview(path: str) -> FileResponse:
-    target = _safe_root_file(path)
+    target, actual_ext = _resolve_preview_image(path)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="Изображение не найдено")
-    media_type = mimetypes.guess_type(target.name)[0]
+    media_types_by_ext = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+    }
+    media_type = media_types_by_ext.get(actual_ext or "") or mimetypes.guess_type(target.name)[0]
     return FileResponse(target, media_type=media_type)
 
 
