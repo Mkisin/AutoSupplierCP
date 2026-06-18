@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import mimetypes
@@ -139,31 +139,6 @@ def _download_data_sources() -> None:
         except Exception as exc:
             print(f"[data] {name}: ошибка — {exc}", flush=True)
 
-    if os.environ.get("DOWNLOAD_DRIVE_FOLDERS", "").strip().lower() not in {"1", "true", "yes"}:
-        print("[data] Drive-папки не скачиваются на старте; файлы будут загружаться по требованию", flush=True)
-        return
-
-    for name, info in config.get("drive_folders", {}).items():
-        local_dir = ROOT / info["local_dir"]
-        if local_dir.exists() and any(local_dir.iterdir()):
-            print(f"[data] {name}: папка уже есть, пропуск", flush=True)
-            _log_media_folder_stats(name, local_dir)
-            continue
-        try:
-            import gdown  # type: ignore[import]
-            print(f"[data] Скачиваю папку {name}...", flush=True)
-            local_dir.mkdir(parents=True, exist_ok=True)
-            gdown.download_folder(
-                info["url"], output=str(local_dir), quiet=True, use_cookies=False
-            )
-            print(f"[data] {name}: готово", flush=True)
-            _log_media_folder_stats(name, local_dir)
-        except ImportError:
-            print(f"[data] {name}: gdown не установлен. Запустите: pip install gdown", flush=True)
-        except Exception as exc:
-            print(f"[data] {name}: ошибка — {exc}", flush=True)
-            _log_media_folder_stats(name, local_dir)
-
 
 @app.on_event("startup")
 def _on_startup() -> None:
@@ -189,24 +164,7 @@ def _resolve_preview_image(path_value: str) -> tuple[Path, str | None]:
             return target, image_ext(target)
         except Exception:
             return target, None
-
-    try:
-        relative_path = target.relative_to(ROOT.resolve())
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Некорректный путь к файлу") from exc
-
-    try:
-        from build_presentation_direct import image_ext, resolve_image_path
-
-        resolved = resolve_image_path(relative_path)
-        resolved = _safe_root_file(str(resolved))
-        actual_ext = image_ext(resolved)
-    except HTTPException:
-        raise
-    except Exception:
-        return target, None
-
-    return resolved, actual_ext
+    return target, None
 
 
 def _set_presentation_job(job_id: str, **values: Any) -> None:

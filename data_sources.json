@@ -20,19 +20,5 @@
       "local_file": "Список сетей.xlsx",
       "download_once": true
     }
-  },
-  "drive_folders": {
-    "Фотки переговоров": {
-      "url": "https://drive.google.com/drive/folders/19z16BDKwHYJSTlOR2bJLKkniJ3S8gQ8j",
-      "local_dir": "Фотки переговоров"
-    },
-    "Логотипы сетей": {
-      "url": "https://drive.google.com/drive/folders/1zUWx3e9hV_thK8wgq5yFun2b8LcRbRt7",
-      "local_dir": "Логотипы сетей"
-    },
-    "Логотипы поставщиков": {
-      "url": "https://drive.google.com/drive/folders/1porC8ObhOJk4bTHNb92N7iOYERsg5OCc",
-      "local_dir": "Логотипы поставщиков"
-    }
   }
 }
