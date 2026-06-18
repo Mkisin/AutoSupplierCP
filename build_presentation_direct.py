@@ -25,6 +25,7 @@ IMAGE_TOKENS = [
     "{{pic1}}", "{{pic2}}", "{{pic3}}", "{{pic4}}", "{{pic5}}", "{{pic6}}", "{{pic7}}",
     "{{logo1}}", "{{logo2}}", "{{logo3}}",
 ]
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
 DRIVE_FOLDER_INDEX_CACHE = {}
 
 ET.register_namespace("p", P)
@@ -82,11 +83,30 @@ def image_ext(path):
     return None
 
 
+def is_image_filename(value):
+    return Path(str(value or "")).suffix.lower() in IMAGE_SUFFIXES
+
+
 def is_powerpoint_safe_image(path):
     return image_ext(path) in {".jpg", ".jpeg", ".png", ".gif", ".svg"}
 
 
 def convert_to_png(source, destination):
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(source) as image:
+            image = ImageOps.exif_transpose(image)
+            if image.mode not in {"RGB", "RGBA"}:
+                image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+            image.save(destination, "PNG")
+        return destination.exists() and destination.stat().st_size > 0 and image_ext(destination) == ".png"
+    except ImportError:
+        pass
+    except Exception:
+        if os.name != "nt":
+            raise
+
     env = os.environ.copy()
     env["PPT_IMAGE_SOURCE"] = str(source.resolve())
     env["PPT_IMAGE_DESTINATION"] = str(destination.resolve())
@@ -211,6 +231,18 @@ def drive_folder_url_for_path(path):
     return ""
 
 
+def drive_folder_url_for_folder(folder):
+    root_name = Path(folder).name.casefold()
+    if not root_name:
+        return ""
+    config = load_data_sources()
+    for info in (config.get("drive_folders") or {}).values():
+        local_dir = str(info.get("local_dir", "")).strip().replace("\\", "/")
+        if local_dir and Path(local_dir).name.casefold() == root_name:
+            return str(info.get("url", "")).strip()
+    return ""
+
+
 def drive_folder_index(folder_url):
     if not folder_url:
         return {}
@@ -226,18 +258,42 @@ def drive_folder_index(folder_url):
         return {}
 
     index = {}
-    pattern = r'aria-label="([^"]+?)".{0,800}?ssk=[\'\"][^\'\"]*?:([A-Za-z0-9_-]{20,})-\d+-\d+'
-    for match in re.finditer(pattern, page, re.DOTALL):
-        label = match.group(1).strip()
-        file_id = match.group(2).strip()
+
+    def add_index_item(label, file_id):
+        label = str(label or "").strip()
+        file_id = str(file_id or "").strip()
         for suffix in (" Image Shared", " Image", " Shared"):
             if label.endswith(suffix):
                 label = label[: -len(suffix)].strip()
-        if label and file_id:
-            index[label.casefold()] = file_id
+        if label and file_id and is_image_filename(label):
+            index[label.casefold()] = {"label": label, "id": file_id}
+
+    patterns = (
+        r'aria-label="([^"]+?)".{0,2000}?data-id="([A-Za-z0-9_-]{20,})"',
+        r'aria-label="([^"]+?)".{0,800}?ssk=[\'\"][^\'\"]*?:([A-Za-z0-9_-]{20,})-\d+-\d+',
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, page, re.DOTALL):
+            add_index_item(match.group(1), match.group(2))
 
     DRIVE_FOLDER_INDEX_CACHE[folder_url] = index
     return index
+
+
+def download_drive_file(path, file_id):
+    if not file_id:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        url = f"https://drive.usercontent.google.com/download?id={file_id}"
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 AutoSupplierCP"})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            tmp.write_bytes(response.read())
+        tmp.replace(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+    return path
 
 
 def ensure_drive_file(path):
@@ -247,11 +303,14 @@ def ensure_drive_file(path):
     if not folder_url:
         return path
     index = drive_folder_index(folder_url)
-    file_id = index.get(path.name.casefold())
+    entry = index.get(path.name.casefold())
+    file_id = entry.get("id") if entry else ""
     if not file_id:
         wanted = re.sub(r"[^a-zа-я0-9]+", " ", path.stem.casefold()).strip()
         scored = []
-        for label, candidate_id in index.items():
+        for label_key, candidate_entry in index.items():
+            label = candidate_entry.get("label", label_key)
+            candidate_id = candidate_entry.get("id", "")
             candidate = re.sub(r"[^a-zа-я0-9]+", " ", Path(label).stem.casefold()).strip()
             if not wanted or not candidate:
                 continue
@@ -269,17 +328,7 @@ def ensure_drive_file(path):
     if not file_id:
         return path
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        url = f"https://drive.usercontent.google.com/download?id={file_id}"
-        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 AutoSupplierCP"})
-        with urllib.request.urlopen(request, timeout=60) as response:
-            tmp.write_bytes(response.read())
-        tmp.replace(path)
-    except Exception:
-        tmp.unlink(missing_ok=True)
-    return path
+    return download_drive_file(path, file_id)
 
 
 def iter_images(folder):
@@ -439,12 +488,31 @@ def score_file(path, needles):
     return score
 
 
+def best_drive_image(folder, needles):
+    folder_path = Path(folder)
+    folder_url = drive_folder_url_for_folder(folder_path)
+    if not folder_url:
+        return None
+    scored = []
+    for label_key, entry in drive_folder_index(folder_url).items():
+        label = entry.get("label", label_key)
+        score = score_file(Path(label), needles)
+        if score > 0:
+            scored.append((score, label, entry.get("id", "")))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], item[1].casefold()))
+    _, label, file_id = scored[0]
+    path = download_drive_file(folder_path / label, file_id)
+    return path if image_ext(path) else None
+
+
 def best_image(folder, needles):
     candidates = iter_images(folder)
     scored = [(score_file(path, needles), path) for path in candidates]
     scored = [item for item in scored if item[0] > 0]
     if not scored:
-        return None
+        return best_drive_image(folder, needles)
     scored.sort(key=lambda item: (-item[0], item[1].name))
     return scored[0][1]
 
