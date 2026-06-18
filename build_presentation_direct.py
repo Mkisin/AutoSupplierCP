@@ -427,13 +427,48 @@ def split_tags(value):
     }
 
 
+NETWORK_ALIASES = {
+    "азбука вкуса": {"азбука", "azbuka", "azbuka vkusa"},
+    "ашан": {"auchan"},
+    "вкусвилл": {"вкус вилл", "vkusvill", "vkus vill"},
+    "магнит": {"magnit"},
+    "магнит сзфо": {"магнит спб", "магнит питер"},
+    "метро": {"metro", "метро кэш энд керри", "metro cash carry"},
+    "metro": {"метро", "метро кэш энд керри", "metro cash carry"},
+    "окей": {"о кей", "o key", "okay", "okey", "оке"},
+    "пятерочка": {"пятёрочка", "5ка", "5 ка", "пятерка", "пятёрка", "x5", "х5", "x5 group", "х5 group"},
+    "перекресток": {"перекрёсток", "perekrestok", "x5", "х5", "x5 group", "х5 group"},
+    "сбермаркет": {"сбер маркет", "sbermarket", "sber market", "купер", "kuper"},
+}
+
+
+def network_match_keys(value):
+    normalized = normalize(value)
+    keys = {normalized} if normalized else set()
+    if not normalized:
+        return keys
+
+    for canonical, aliases in NETWORK_ALIASES.items():
+        alias_values = {canonical, *aliases}
+        alias_keys = {normalize(item) for item in alias_values if normalize(item)}
+        if normalized in alias_keys or any(key and (key in normalized or normalized in key) for key in alias_keys):
+            keys.update(alias_keys)
+            keys.add(normalize(canonical))
+    return {key for key in keys if key}
+
+
 def preferred_network_matches(record, preferred_networks):
     network_name = str(record.get("Сеть", ""))
     if not network_name or not preferred_networks:
         return False
     normalized_name = normalize(network_name)
-    preferred_normalized = {normalize(item) for item in preferred_networks if normalize(item)}
-    if normalized_name in preferred_normalized:
+    network_keys = network_match_keys(network_name)
+    preferred_keys = {
+        key
+        for item in preferred_networks
+        for key in network_match_keys(item)
+    }
+    if network_keys & preferred_keys:
         return True
     network_words = words(network_name)
     return any(
