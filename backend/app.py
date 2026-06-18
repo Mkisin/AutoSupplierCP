@@ -86,6 +86,8 @@ BITRIX_FIELD_MAP = {
     "city": "UF_CRM_1653999902075",
     "productName": "UF_CRM_1654516980198",
     "productCategory": "UF_CRM_1565770347",
+    "productCompanyCategories": "UF_CRM_1556562617",
+    "productNegotiationCategories": "UF_CRM_1654001230422",
     "priceCategory": "UF_CRM_1654001339275",
     "productDescription": "UF_CRM_5CBD83328D86E",
     "preferredNetworkCategories": "UF_CRM_1669628251",
@@ -2208,6 +2210,22 @@ def _bitrix_field_value_to_text(fields_meta: dict[str, Any], field_id: str, raw:
     return scalar_to_text(raw)
 
 
+def _join_unique_text_values(*values: Any) -> str:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for item in re.split(r"[;,\n\r]+", str(value or "")):
+            normalized = item.strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(normalized)
+    return "; ".join(result)
+
+
 def _bitrix_get_deal_data(deal_id: str, webhook_url: str, field_map: dict[str, str]) -> dict[str, Any]:
     deal = _bitrix_call(webhook_url, "crm.deal.get", {"id": deal_id})
     if not deal:
@@ -2242,6 +2260,14 @@ def _bitrix_get_deal_data(deal_id: str, webhook_url: str, field_map: dict[str, s
         value = _bitrix_field_value_to_text(fields_meta, bitrix_field, raw)
         if value:
             card[app_field] = value
+
+    combined_product_category = _join_unique_text_values(
+        card.get("productCompanyCategories", ""),
+        card.get("productNegotiationCategories", ""),
+        card.get("productCategory", ""),
+    )
+    if combined_product_category:
+        card["productCategory"] = combined_product_category
 
     return card
 

@@ -162,36 +162,65 @@ for row in stats_rows:
             "Чемпионы": row[9],
         })
 
-category_lower = category.lower()
-stats_source = "exact"
-stat = next(
-    (
-        record for record in stats
-        if record.get("Группа", "").lower() in category_lower
-        or category_lower in record.get("Группа", "").lower()
-    ),
-    None,
-)
+def category_parts(value):
+    return [
+        item.strip()
+        for item in re.split(r"[;,\n\r]+", str(value or ""))
+        if item.strip()
+    ]
 
-if not stat:
-    category_words = {
-        word for word in re.split(r"\W+", category_lower)
-        if len(word) >= 5
+
+def stats_terms(value):
+    text = str(value or "").lower()
+    terms = {
+        word
+        for word in re.split(r"\W+", text)
+        if len(word) >= 4
     }
-    scored = []
-    for record in stats:
-        group_words = {
-            word for word in re.split(r"\W+", record.get("Группа", "").lower())
-            if len(word) >= 5
-        }
-        score = len(category_words & group_words)
-        if score:
-            scored.append((score, record))
-    if scored:
-        scored.sort(key=lambda item: item[0], reverse=True)
-        stat = scored[0][1]
-        stats_source = "word_match"
+    if "молоч" in text or "молок" in text or "сыр" in text or "творог" in text:
+        terms.update({"молоко", "молочная", "молочной", "продукция", "сыры", "сыр", "творог"})
+    if "мяс" in text or "колбас" in text or "деликатес" in text:
+        terms.update({"мясные", "мясо", "мясопродукты", "деликатесы", "колбасные"})
+    if "круп" in text or "бакале" in text or "зерно" in text:
+        terms.update({"крупы", "бакалея", "зернопродукты"})
+    if "космет" in text or "парфюм" in text or "уход" in text:
+        terms.update({"косметика", "парфюмерия", "уходовая"})
+    if "живот" in text or "зоо" in text or "корм" in text:
+        terms.update({"товары", "животных", "зоотовары", "корма"})
+    if "строй" in text or "строит" in text or "diy" in text:
+        terms.update({"стройтовары", "строительные", "материалы", "diy"})
+    return terms
 
+
+def score_stats_record(category_value, record):
+    category_lower = str(category_value or "").lower()
+    group = str(record.get("Группа", ""))
+    group_lower = group.lower()
+    if not category_lower or not group_lower:
+        return 0, ""
+    if group_lower in category_lower or category_lower in group_lower:
+        return 1000, "exact"
+    overlap = stats_terms(category_lower) & stats_terms(group_lower)
+    if overlap:
+        return 100 * len(overlap), "word_match"
+    return 0, ""
+
+
+scored_stats = []
+for part_index, part in enumerate(category_parts(category) or [category]):
+    for record_index, record in enumerate(stats):
+        score, source = score_stats_record(part, record)
+        if score:
+            scored_stats.append((score, part_index, record_index, source, record))
+
+if scored_stats:
+    scored_stats.sort(key=lambda item: (-item[0], item[1], item[2]))
+    _, _, _, stats_source, stat = scored_stats[0]
+else:
+    stat = None
+    stats_source = "exact"
+
+category_lower = category.lower()
 if not stat and ("мясо" in category_lower or "мясопродукт" in category_lower):
     stat = next((record for record in stats if record.get("Группа") == "Мясные деликатесы"), None)
     if stat:
