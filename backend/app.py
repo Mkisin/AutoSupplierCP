@@ -92,6 +92,7 @@ BITRIX_FIELD_MAP = {
     "preferredNetworks": "UF_CRM_1654093180996",
     "presentationFileField": "UF_CRM_1745830954",
 }
+BITRIX_AFTER_PRESENTATION_STAGE_ID = "C148:FINAL_INVOICE"
 
 
 def _media_folder_stats(path: Path) -> dict[str, int]:
@@ -2260,6 +2261,19 @@ def _bitrix_upload_pptx(webhook_url: str, deal_id: str, pptx_path: Path, file_fi
     )
 
 
+def _bitrix_move_deal_stage(webhook_url: str, deal_id: str, stage_id: str) -> None:
+    if not stage_id:
+        return
+    _bitrix_call(
+        webhook_url,
+        "crm.deal.update",
+        {
+            "id": deal_id,
+            "fields": {"STAGE_ID": stage_id},
+        },
+    )
+
+
 def _default_ai_provider() -> str:
     for provider in ("deepseek", "openai"):
         settings = _ai_provider_settings(provider)
@@ -2340,6 +2354,8 @@ def _run_bitrix_pipeline(job_id: str, deal_id: str) -> None:
         _set_bitrix_job(job_id, progress=90, message="Загружаю презентацию в Битрикс24")
 
         _bitrix_upload_pptx(webhook_url, deal_id, pptx_path, file_field)
+        _set_bitrix_job(job_id, progress=95, message="Перемещаю сделку на следующий шаг воронки")
+        _bitrix_move_deal_stage(webhook_url, deal_id, BITRIX_AFTER_PRESENTATION_STAGE_ID)
 
         _set_bitrix_job(
             job_id,
