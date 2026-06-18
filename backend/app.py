@@ -1282,16 +1282,14 @@ def _normalize_photo_selected_ids(
     if not preferred_ids:
         return _normalize_selected_ids(requested_ids, candidates, default_ids, required_count)
 
-    locked_ids = []
-    for item_id in default_ids + preferred_ids:
-        normalized = str(item_id).strip()
-        if normalized in preferred_ids and normalized not in locked_ids:
-            locked_ids.append(normalized)
-        if len(locked_ids) >= required_count:
-            return locked_ids[:required_count]
-
     valid_ids = {str(item.get("id", "")) for item in candidates if item.get("id")}
-    selected = list(locked_ids)
+    selected: list[str] = []
+    for item_id in preferred_ids:
+        normalized = str(item_id).strip()
+        if normalized and normalized in valid_ids and normalized not in selected:
+            selected.append(normalized)
+        if len(selected) >= required_count:
+            return selected[:required_count]
     for item_id in requested_ids or []:
         normalized = str(item_id).strip()
         if normalized and normalized in valid_ids and normalized not in selected:
@@ -1367,6 +1365,24 @@ def _build_selection_from_choices(
 
     selection["reviews"] = _reviews_from_replacements(selection["replacements"])
     return selection
+
+
+def _selected_photo_summary(selection: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = _candidate_map([dict(item) for item in (selection.get("photo_candidates") or [])])
+    summary = []
+    for item_id in selection.get("selected_photo_ids") or []:
+        candidate = candidates.get(str(item_id))
+        if not candidate:
+            continue
+        summary.append(
+            {
+                "id": str(item_id),
+                "network": str(candidate.get("network", "")),
+                "path": str(candidate.get("path", "")),
+                "preferredMatch": bool(candidate.get("preferred_match")),
+            }
+        )
+    return summary
 
 
 def _default_selection_from_report(report: dict[str, Any], provider: str) -> dict[str, Any]:
@@ -2390,6 +2406,7 @@ def _run_bitrix_pipeline(job_id: str, deal_id: str) -> None:
             message="Презентация готова и загружена в сделку",
             fileName=pptx_job["fileName"],
             downloadUrl=pptx_job.get("downloadUrl"),
+            selectedPhotos=_selected_photo_summary(final_selection),
         )
 
     except Exception as exc:
