@@ -76,7 +76,7 @@ DATA_SOURCES_FILE = ROOT / "data_sources.json"
 BITRIX_CONFIG_FILE = ROOT / "bitrix_config.json"
 BITRIX_JOBS: dict[str, dict[str, Any]] = {}
 BITRIX_JOBS_LOCK = threading.Lock()
-BITRIX_FIELD_MAP = {
+BITRIX_DEAL_FIELD_MAP = {
     "companyName": "COMPANY_ID",
     "contactName": "CONTACT_ID",
     "contactPosition": "CONTACT_ID",
@@ -94,6 +94,25 @@ BITRIX_FIELD_MAP = {
     "preferredNetworks": "UF_CRM_1654093180996",
     "presentationFileField": "UF_CRM_1745830954",
 }
+BITRIX_LEAD_FIELD_MAP = {
+    "companyName": "COMPANY_TITLE",
+    "contactName": "NAME",
+    "contactLastName": "LAST_NAME",
+    "contactPosition": "POST",
+    "website": "WEB",
+    "country": "ADDRESS_COUNTRY",
+    "city": "ADDRESS_CITY",
+    "leadContactName": "UF_CRM_1443605291",
+    "productCategory": "UF_CRM_1771319497733",
+    "productNegotiationCategories": "UF_CRM_1782133009644",
+    "priceCategory": "UF_CRM_1782134816704",
+    "productDescription": "UF_CRM_1555689023348",
+    "preferredNetworks": "UF_CRM_1782132125417",
+    "conversationComment": "UF_CRM_1782135754570",
+    "region": "UF_CRM_1782132366289",
+    "presentationFileField": "UF_CRM_1782217139829",
+}
+BITRIX_FIELD_MAP = BITRIX_DEAL_FIELD_MAP
 BITRIX_AFTER_PRESENTATION_STAGE_ID = "C148:FINAL_INVOICE"
 
 
@@ -2159,9 +2178,14 @@ def _load_bitrix_config() -> dict[str, Any]:
             "На Render добавьте переменную окружения с URL входящего вебхука Битрикс24."
         )
 
-    field_map = dict(BITRIX_FIELD_MAP)
-    field_map.update({k: v for k, v in (cfg.get("field_map") or {}).items() if v})
-    return {"webhook_url": webhook_url, "field_map": field_map}
+    legacy_field_map = {k: v for k, v in (cfg.get("field_map") or {}).items() if v}
+    deal_field_map = dict(BITRIX_DEAL_FIELD_MAP)
+    deal_field_map.update(legacy_field_map)
+    deal_field_map.update({k: v for k, v in (cfg.get("deal_field_map") or {}).items() if v})
+
+    lead_field_map = dict(BITRIX_LEAD_FIELD_MAP)
+    lead_field_map.update({k: v for k, v in (cfg.get("lead_field_map") or {}).items() if v})
+    return {"webhook_url": webhook_url, "deal_field_map": deal_field_map, "lead_field_map": lead_field_map}
 
 
 def _verify_bitrix_inbound_token(request: Request) -> None:
@@ -2288,16 +2312,68 @@ def _bitrix_get_deal_data(deal_id: str, webhook_url: str, field_map: dict[str, s
     return card
 
 
-def _bitrix_upload_pptx(webhook_url: str, deal_id: str, pptx_path: Path, file_field: str) -> None:
+def _bitrix_get_lead_data(lead_id: str, webhook_url: str, field_map: dict[str, str]) -> dict[str, Any]:
+    lead = _bitrix_call(webhook_url, "crm.lead.get", {"id": lead_id})
+    if not lead:
+        raise RuntimeError(f"Lead {lead_id} not found in Bitrix24")
+    fields_meta = _bitrix_call(webhook_url, "crm.lead.fields", {}) or {}
+
+    card: dict[str, Any] = {}
+
+    for app_field, bitrix_field in field_map.items():
+        if app_field in ("presentationFileField", "contactLastName", "leadContactName"):
+            continue
+        if not bitrix_field or bitrix_field == "UF_CRM_XXXX":
+            continue
+        raw = lead.get(bitrix_field)
+        if raw is None:
+            continue
+        value = _bitrix_field_value_to_text(fields_meta, bitrix_field, raw)
+        if value:
+            card[app_field] = value
+
+    name_field = field_map.get("contactName", "NAME")
+    last_name_field = field_map.get("contactLastName", "LAST_NAME")
+    name = _bitrix_field_value_to_text(fields_meta, name_field, lead.get(name_field))
+    last_name = _bitrix_field_value_to_text(fields_meta, last_name_field, lead.get(last_name_field))
+    contact_name = " ".join(part for part in (name, last_name) if part).strip()
+    lead_contact_field = field_map.get("leadContactName", "")
+    if not contact_name and lead_contact_field:
+        contact_name = _bitrix_field_value_to_text(fields_meta, lead_contact_field, lead.get(lead_contact_field))
+    if contact_name:
+        card["contactName"] = contact_name
+
+    combined_product_category = _join_unique_text_values(
+        card.get("productCompanyCategories", ""),
+        card.get("productNegotiationCategories", ""),
+        card.get("productCategory", ""),
+    )
+    if combined_product_category:
+        card["productCategory"] = combined_product_category
+
+    return card
+
+
+def _bitrix_get_card_data(entity_type: str, entity_id: str, webhook_url: str, field_map: dict[str, str]) -> dict[str, Any]:
+    if entity_type == "deal":
+        return _bitrix_get_deal_data(entity_id, webhook_url, field_map)
+    if entity_type == "lead":
+        return _bitrix_get_lead_data(entity_id, webhook_url, field_map)
+    raise RuntimeError(f"Unknown Bitrix24 entity type: {entity_type}")
+
+
+def _bitrix_upload_pptx(webhook_url: str, entity_type: str, entity_id: str, pptx_path: Path, file_field: str) -> None:
     if not file_field or file_field == "UF_CRM_XXXX":
         raise RuntimeError("presentationFileField не настроен в bitrix_config.json")
+    if entity_type not in {"deal", "lead"}:
+        raise RuntimeError(f"Unknown Bitrix24 entity type: {entity_type}")
     import base64
     content_b64 = base64.b64encode(pptx_path.read_bytes()).decode("ascii")
     _bitrix_call(
         webhook_url,
-        "crm.deal.update",
+        f"crm.{entity_type}.update",
         {
-            "id": deal_id,
+            "id": entity_id,
             "fields": {file_field: {"fileData": [pptx_path.name, content_b64]}},
         },
     )
@@ -2331,19 +2407,19 @@ def _set_bitrix_job(job_id: str, **values: Any) -> None:
         job["updatedAt"] = datetime.now().isoformat(timespec="seconds")
 
 
-def _run_bitrix_pipeline(job_id: str, deal_id: str) -> None:
+def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
     try:
-        _set_bitrix_job(job_id, status="running", progress=5, message="Загружаю данные сделки из Битрикс24")
+        _set_bitrix_job(job_id, status="running", progress=5, message="Загружаю данные карточки из Битрикс24")
 
         cfg = _load_bitrix_config()
         webhook_url: str = cfg["webhook_url"]
-        field_map: dict[str, str] = cfg.get("field_map", {})
+        field_map: dict[str, str] = cfg.get(f"{entity_type}_field_map", {})
         file_field: str = field_map.get("presentationFileField", "")
 
-        card_data = _bitrix_get_deal_data(deal_id, webhook_url, field_map)
+        card_data = _bitrix_get_card_data(entity_type, entity_id, webhook_url, field_map)
         company = str(card_data.get("companyName") or "").strip()
         if not company:
-            raise RuntimeError("Не удалось получить название компании из сделки Битрикс24")
+            raise RuntimeError("Не удалось получить название компании из карточки Битрикс24")
 
         _set_bitrix_job(job_id, progress=15, message=f"Сохраняю карточку: {company}")
 
@@ -2395,15 +2471,16 @@ def _run_bitrix_pipeline(job_id: str, deal_id: str) -> None:
 
         _set_bitrix_job(job_id, progress=90, message="Загружаю презентацию в Битрикс24")
 
-        _bitrix_upload_pptx(webhook_url, deal_id, pptx_path, file_field)
-        _set_bitrix_job(job_id, progress=95, message="Перемещаю сделку на следующий шаг воронки")
-        _bitrix_move_deal_stage(webhook_url, deal_id, BITRIX_AFTER_PRESENTATION_STAGE_ID)
+        _bitrix_upload_pptx(webhook_url, entity_type, entity_id, pptx_path, file_field)
+        _set_bitrix_job(job_id, progress=95, message="Finishing Bitrix24 update")
+        if entity_type == "deal":
+            _bitrix_move_deal_stage(webhook_url, entity_id, BITRIX_AFTER_PRESENTATION_STAGE_ID)
 
         _set_bitrix_job(
             job_id,
             status="done",
             progress=100,
-            message="Презентация готова и загружена в сделку",
+            message="Презентация готова и загружена в Битрикс24",
             fileName=pptx_job["fileName"],
             downloadUrl=pptx_job.get("downloadUrl"),
             selectedPhotos=_selected_photo_summary(final_selection),
@@ -2456,6 +2533,95 @@ def _extract_bitrix_deal_id(payload: Any) -> str:
     return ""
 
 
+def _extract_bitrix_lead_id(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+
+    def normalize(value: Any) -> str:
+        if isinstance(value, list):
+            for item in value:
+                normalized = normalize(item)
+                if normalized:
+                    return normalized
+            return ""
+        if isinstance(value, dict):
+            return _extract_bitrix_lead_id(value)
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        match = re.search(r"(?:LEAD_|L_)?(\d+)$", raw, re.IGNORECASE)
+        return match.group(1) if match else raw
+
+    for key in ("lead_id", "LEAD_ID", "id", "ID", "document_id", "DOCUMENT_ID"):
+        normalized = normalize(payload.get(key))
+        if normalized:
+            return normalized
+
+    for key in ("data", "DATA", "FIELDS", "fields"):
+        normalized = normalize(payload.get(key))
+        if normalized:
+            return normalized
+
+    for key, value in payload.items():
+        if str(key).lower() in {
+            "data[fields][id]",
+            "data[fields][lead_id]",
+            "document_id[2]",
+            "document_id",
+        }:
+            normalized = normalize(value)
+            if normalized:
+                return normalized
+    return ""
+
+
+async def _extract_bitrix_request_entity_id(request: Request, entity_type: str) -> str:
+    extractor = _extract_bitrix_lead_id if entity_type == "lead" else _extract_bitrix_deal_id
+    entity_id = extractor(dict(request.query_params))
+    content_type = request.headers.get("content-type", "")
+    if entity_id:
+        return entity_id
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        return extractor(body)
+    form = await request.form()
+    return extractor(dict(form))
+
+
+async def _bitrix_webhook_for_entity(request: Request, entity_type: str) -> dict[str, Any]:
+    _verify_bitrix_inbound_token(request)
+
+    entity_id = await _extract_bitrix_request_entity_id(request, entity_type)
+    if not entity_id:
+        raise HTTPException(status_code=400, detail=f"{entity_type}_id not provided")
+
+    job_id = uuid.uuid4().hex
+    _set_bitrix_job(
+        job_id,
+        id=job_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        status="queued",
+        progress=0,
+        message="Р—Р°РґР°С‡Р° РїРѕСЃС‚Р°РІР»РµРЅР° РІ РѕС‡РµСЂРµРґСЊ",
+    )
+    threading.Thread(target=_run_bitrix_pipeline, args=(job_id, entity_type, entity_id), daemon=True).start()
+    return {"ok": True, "job_id": job_id, "entity_type": entity_type, "entity_id": entity_id}
+
+
+@app.post("/api/bitrix/deal/webhook")
+async def bitrix_deal_webhook(request: Request) -> dict[str, Any]:
+    return await _bitrix_webhook_for_entity(request, "deal")
+
+
+@app.post("/api/bitrix/lead/webhook")
+async def bitrix_lead_webhook(request: Request) -> dict[str, Any]:
+    return await _bitrix_webhook_for_entity(request, "lead")
+
+
 @app.post("/api/bitrix/webhook")
 async def bitrix_webhook(request: Request) -> dict[str, Any]:
     _verify_bitrix_inbound_token(request)
@@ -2486,7 +2652,7 @@ async def bitrix_webhook(request: Request) -> dict[str, Any]:
         progress=0,
         message="Задача поставлена в очередь",
     )
-    threading.Thread(target=_run_bitrix_pipeline, args=(job_id, deal_id), daemon=True).start()
+    threading.Thread(target=_run_bitrix_pipeline, args=(job_id, "deal", deal_id), daemon=True).start()
     return {"ok": True, "job_id": job_id}
 
 

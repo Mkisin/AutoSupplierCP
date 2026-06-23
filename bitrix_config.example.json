@@ -1,5 +1,5 @@
 {
-  "field_map": {
+  "deal_field_map": {
     "companyName": "COMPANY_ID",
     "contactName": "CONTACT_ID",
     "contactPosition": "CONTACT_ID",
@@ -16,5 +16,23 @@
     "preferredNetworkCategories": "UF_CRM_1669628251",
     "preferredNetworks": "UF_CRM_1654093180996",
     "presentationFileField": "UF_CRM_1745830954"
+  },
+  "lead_field_map": {
+    "companyName": "COMPANY_TITLE",
+    "contactName": "NAME",
+    "contactLastName": "LAST_NAME",
+    "contactPosition": "POST",
+    "website": "WEB",
+    "country": "ADDRESS_COUNTRY",
+    "city": "ADDRESS_CITY",
+    "leadContactName": "UF_CRM_1443605291",
+    "productCategory": "UF_CRM_1771319497733",
+    "productNegotiationCategories": "UF_CRM_1782133009644",
+    "priceCategory": "UF_CRM_1782134816704",
+    "productDescription": "UF_CRM_1555689023348",
+    "preferredNetworks": "UF_CRM_1782132125417",
+    "conversationComment": "UF_CRM_1782135754570",
+    "region": "UF_CRM_1782132366289",
+    "presentationFileField": "UF_CRM_1782217139829"
   }
 }
