@@ -95,7 +95,7 @@ BITRIX_DEAL_FIELD_MAP = {
     "presentationFileField": "UF_CRM_1745830954",
 }
 BITRIX_LEAD_FIELD_MAP = {
-    "companyName": "COMPANY_TITLE",
+    "companyName": "UF_CRM_1782290699215",
     "contactName": "NAME",
     "contactLastName": "LAST_NAME",
     "contactPosition": "POST",
