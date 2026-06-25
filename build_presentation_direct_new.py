@@ -31,9 +31,18 @@ ET.register_namespace("a", A)
 ET.register_namespace("r", R)
 ET.register_namespace("", REL)
 
+BASE_DIR = Path(__file__).resolve().parent
+
 
 def qn(namespace, tag):
     return f"{{{namespace}}}{tag}"
+
+
+def project_path(value):
+    path = Path(str(value or "").strip().replace("\\", "/"))
+    if path.is_absolute():
+        return path
+    return BASE_DIR / path
 
 
 def read_payload(company):
@@ -41,11 +50,12 @@ def read_payload(company):
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
-    command = [sys.executable, "build_payload_new.py"]
+    command = [sys.executable, str(BASE_DIR / "build_payload_new.py")]
     if company:
         command.append(company)
     result = subprocess.check_output(
         command,
+        cwd=BASE_DIR,
         text=True,
         encoding="utf-8",
         env=env,
@@ -138,7 +148,7 @@ def normalize_images_for_powerpoint(image_mapping):
     report = {}
     temp_files = []
     for index, (token, source) in enumerate(image_mapping.items(), start=1):
-        fd, target_name = tempfile.mkstemp(prefix=f"ppt_image_{index}_", suffix=".png", dir=Path.cwd())
+        fd, target_name = tempfile.mkstemp(prefix=f"ppt_image_{index}_", suffix=".png", dir=BASE_DIR)
         os.close(fd)
         target = Path(target_name)
         target.unlink(missing_ok=True)
@@ -199,16 +209,16 @@ def normalize_images_for_powerpoint(image_mapping):
 
 
 def first_file(pattern):
-    files = sorted(Path(".").glob(pattern))
+    files = sorted(BASE_DIR.glob(pattern))
     return next((path for path in files if image_ext(path)), None)
 
 
 def data_path(value):
-    return Path(str(value or "").strip().replace("\\", "/"))
+    return project_path(value)
 
 
 def iter_images(folder):
-    folder_path = Path(folder)
+    folder_path = project_path(folder)
     if not folder_path.exists():
         return []
     return sorted(
@@ -223,15 +233,13 @@ def iter_images(folder):
 
 def resolve_image_path(path):
     candidate = data_path(path)
-    if not candidate.is_absolute():
-        candidate = Path(".") / candidate
     if image_ext(candidate):
         return candidate
 
     search_roots = []
     if len(candidate.parts) > 1:
         search_roots.append(candidate.parent)
-    search_roots.append(Path("."))
+    search_roots.append(BASE_DIR)
 
     seen = set()
     for root in search_roots:
@@ -267,7 +275,7 @@ def col_to_index(col):
 
 
 def read_xlsx(path):
-    path = Path(path)
+    path = project_path(path)
     if not path.exists():
         return {}
     sheet_ns = {
@@ -509,8 +517,6 @@ def catalog_records(path):
         if not file_value:
             continue
         path_value = data_path(file_value)
-        if not path_value.is_absolute():
-            path_value = Path(".") / path_value
         record["_path"] = path_value
         records.append(record)
     return records
@@ -938,15 +944,17 @@ def network_logo_path(value):
     value = str(value or "").strip()
     if not value:
         return None
-    path = data_path(value)
-    if not path.is_absolute() and len(path.parts) == 1:
-        path = Path("Логотипы сетей") / path
+    raw_path = Path(value.replace("\\", "/"))
+    if not raw_path.is_absolute() and len(raw_path.parts) == 1:
+        path = project_path(Path("Логотипы сетей") / raw_path)
+    else:
+        path = project_path(raw_path)
     jpg_peer = path.with_suffix(".jpg")
     if image_ext(jpg_peer):
         return jpg_peer
     if image_ext(path):
         return path
-    logo_dir = Path("Логотипы сетей")
+    logo_dir = project_path("Логотипы сетей")
     if not logo_dir.exists():
         return None
     name = path.name.lower()
@@ -1444,14 +1452,14 @@ def main():
     parser.add_argument("--template", default="Шаблон презентации новый.pptx", help="PPTX template path.")
     args = parser.parse_args()
 
-    template = Path(args.template)
+    template = project_path(args.template)
     payload = read_payload(args.company)
     slug = re.sub(r"\W+", "_", payload["company"], flags=re.UNICODE).strip("_").lower()
-    output = Path(f"{slug}_ЦЗС_новый.pptx")
+    output = BASE_DIR / f"{slug}_ЦЗС_новый.pptx"
     if output.exists():
         index = 2
         while True:
-            candidate = Path(f"{slug}_ЦЗС_новый_v{index}.pptx")
+            candidate = BASE_DIR / f"{slug}_ЦЗС_новый_v{index}.pptx"
             if not candidate.exists():
                 output = candidate
                 break
