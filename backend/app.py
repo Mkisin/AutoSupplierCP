@@ -217,7 +217,7 @@ def _run_presentation_job(job_id: str, company: str, selection: dict[str, Any] |
     env["PYTHONUTF8"] = "1"
     if selection:
         env["PRESENTATION_SELECTION_JSON"] = json.dumps(selection, ensure_ascii=False)
-    command = [sys.executable, "-X", "utf8", "build_presentation_direct.py", company]
+    command = [sys.executable, "-X", "utf8", "build_presentation_direct_new.py", company]
     stdout_path: Path | None = None
     stderr_path: Path | None = None
 
@@ -1170,7 +1170,7 @@ def _find_site_inns(website: str) -> list[dict[str, str]]:
 def _run_presentation_dry_run(company: str) -> dict[str, Any]:
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
-    command = [sys.executable, "-X", "utf8", "build_presentation_direct.py", company, "--dry-run"]
+    command = [sys.executable, "-X", "utf8", "build_presentation_direct_new.py", company, "--dry-run"]
     try:
         result = subprocess.run(
             command,
@@ -1212,7 +1212,7 @@ def _run_presentation_dry_run_with_override(company: str, form_payload: dict[str
     payload_override = _payload_override_from_form(form_payload)
     if payload_override:
         env["PAYLOAD_OVERRIDE_JSON"] = json.dumps(payload_override, ensure_ascii=False)
-    command = [sys.executable, "-X", "utf8", "build_presentation_direct.py", company, "--dry-run"]
+    command = [sys.executable, "-X", "utf8", "build_presentation_direct_new.py", company, "--dry-run"]
     try:
         result = subprocess.run(
             command,
@@ -1238,9 +1238,9 @@ def _run_presentation_dry_run_with_override(company: str, form_payload: dict[str
 
 def _reviews_from_replacements(replacements: dict[str, Any]) -> list[dict[str, str]]:
     review_keys = [
-        ("{{block6}}", "{{block7}}", "{{block8}}"),
-        ("{{block9}}", "{{block10}}", "{{block11}}"),
-        ("{{block12}}", "{{block13}}", "{{block14}}"),
+        ("{{block15}}", "{{block16}}", "{{block17}}"),
+        ("{{block18}}", "{{block19}}", "{{block20}}"),
+        ("{{block21}}", "{{block22}}", "{{block23}}"),
     ]
     reviews = []
     for company_key, person_key, text_key in review_keys:
@@ -1363,9 +1363,9 @@ def _build_selection_from_choices(
         selection["planned_images"][token] = str(selected_option.get("path", ""))
 
     review_tokens = {
-        0: ("{{block6}}", "{{block7}}", "{{block8}}"),
-        1: ("{{block9}}", "{{block10}}", "{{block11}}"),
-        2: ("{{block12}}", "{{block13}}", "{{block14}}"),
+        0: ("{{block15}}", "{{block16}}", "{{block17}}"),
+        1: ("{{block18}}", "{{block19}}", "{{block20}}"),
+        2: ("{{block21}}", "{{block22}}", "{{block23}}"),
     }
     for company_key, person_key, text_key in review_tokens.values():
         selection["replacements"][company_key] = ""
@@ -1420,10 +1420,11 @@ def _default_selection_from_report(report: dict[str, Any], provider: str) -> dic
         "category": report.get("category", ""),
         "stats": {
             "source": report.get("stats_source", ""),
-            "category": replacements.get("{{block2}}", report.get("category", "")),
-            "negotiations": replacements.get("{{block3}}", ""),
-            "interest": replacements.get("{{block4}}", ""),
-            "champions": replacements.get("{{block5}}", ""),
+            "category": replacements.get("{{block3}}", report.get("category", "")),
+            "contracts": replacements.get("{{block6}}", ""),
+            "average_check": replacements.get("{{block27}}") or replacements.get("{{block7}}", ""),
+            "contracts_per_supplier": replacements.get("{{block8}}", ""),
+            "buyers": replacements.get("{{block9}}", ""),
         },
         "reviews": reviews,
         "planned_images": planned_images,
