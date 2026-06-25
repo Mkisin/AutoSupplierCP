@@ -1176,10 +1176,10 @@ def shape_text(shape):
     return "".join(t.text or "" for t in shape.findall(".//a:t", NS)).strip()
 
 
-def apply_block7_style(shape):
+def apply_average_check_style(shape):
     for run in shape.findall(".//a:r", NS):
         text_node = run.find("a:t", NS)
-        if text_node is None or text_node.text != "10.5":
+        if text_node is None or not str(text_node.text or "").strip():
             continue
         rpr = run.find("a:rPr", NS)
         if rpr is None:
@@ -1330,8 +1330,8 @@ def replace_text(root, replacements):
             text_nodes[0].text = str(value)
             for node in text_nodes[1:]:
                 node.text = ""
-            if key == "{{block7}}":
-                apply_block7_style(shape)
+            if key in {"{{block7}}", "{{block27}}"}:
+                apply_average_check_style(shape)
             remove_empty_text_runs(shape)
             break
 
@@ -1357,17 +1357,22 @@ def replace_text(root, replacements):
             continue
         new_text = combined
         replaced_any = False
+        replaced_average_check = False
         for key, value in replacements.items():
             if key in new_text:
                 counts[key] += new_text.count(key)
                 new_text = new_text.replace(key, value)
                 replaced_any = True
+                if key in {"{{block7}}", "{{block27}}"}:
+                    replaced_average_check = True
         if new_text != combined:
             if replaced_any and "{{" not in new_text:
                 new_text = new_text.replace("\t", "").strip()
             text_nodes[0].text = new_text
             for node in text_nodes[1:]:
                 node.text = ""
+            if replaced_average_check:
+                apply_average_check_style(shape)
             remove_empty_text_runs(shape)
     normalize_average_check_shape(root, replacements)
     return counts

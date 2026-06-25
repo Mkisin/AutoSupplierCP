@@ -13,6 +13,7 @@ ai_config.json
 
 *.log
 debug.log
+data/presentation_jobs/
 
 presentation_job_*.out
 presentation_job_*.err

@@ -68,6 +68,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 PRESENTATION_JOBS: dict[str, dict[str, Any]] = {}
 PRESENTATION_JOBS_LOCK = threading.Lock()
+PRESENTATION_JOBS_DIR = ROOT / "data" / "presentation_jobs"
 AI_SELECTIONS: dict[str, dict[str, Any]] = {}
 AI_SELECTIONS_LOCK = threading.Lock()
 DIRECT_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -189,16 +190,52 @@ def _resolve_preview_image(path_value: str) -> tuple[Path, str | None]:
     return target, None
 
 
+def _presentation_job_path(job_id: str) -> Path | None:
+    if not re.fullmatch(r"[0-9a-fA-F]{16,64}", str(job_id or "")):
+        return None
+    return PRESENTATION_JOBS_DIR / f"{job_id}.json"
+
+
+def _save_presentation_job(job_id: str, job: dict[str, Any]) -> None:
+    path = _presentation_job_path(job_id)
+    if path is None:
+        return
+    try:
+        PRESENTATION_JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except Exception as exc:
+        print(f"[jobs] presentation job save failed: {exc}", flush=True)
+
+
+def _load_presentation_job(job_id: str) -> dict[str, Any] | None:
+    path = _presentation_job_path(job_id)
+    if path is None or not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[jobs] presentation job load failed: {exc}", flush=True)
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _set_presentation_job(job_id: str, **values: Any) -> None:
     with PRESENTATION_JOBS_LOCK:
         job = PRESENTATION_JOBS.setdefault(job_id, {})
         job.update(values)
         job["updatedAt"] = datetime.now().isoformat(timespec="seconds")
+        _save_presentation_job(job_id, job)
 
 
 def _get_presentation_job(job_id: str) -> dict[str, Any]:
     with PRESENTATION_JOBS_LOCK:
         job = PRESENTATION_JOBS.get(job_id)
+        if not job:
+            job = _load_presentation_job(job_id)
+            if job:
+                PRESENTATION_JOBS[job_id] = dict(job)
         if not job:
             raise HTTPException(status_code=404, detail="Задача сборки не найдена")
         return dict(job)
