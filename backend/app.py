@@ -317,7 +317,6 @@ def _convert_pptx_to_pdf_ilovepdf(pptx_path: Path) -> Path | None:
     if not public_key:
         return None
 
-    region = os.environ.get("ILOVEPDF_REGION", "eu").strip() or "eu"
     auth = _http_json(
         "https://api.ilovepdf.com/v1/auth",
         {"public_key": public_key},
@@ -329,7 +328,7 @@ def _convert_pptx_to_pdf_ilovepdf(pptx_path: Path) -> Path | None:
     auth_headers = {"Authorization": f"Bearer {token}"}
 
     start = _http_json(
-        f"https://api.ilovepdf.com/v1/start/officepdf/{region}",
+        "https://api.ilovepdf.com/v1/start/officepdf",
         {},
         auth_headers,
         timeout=30,
