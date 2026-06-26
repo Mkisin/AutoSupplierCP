@@ -263,26 +263,36 @@ def _find_office_converter() -> str | None:
 def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
     if not pptx_path.exists():
         raise RuntimeError(f"PPTX file not found: {pptx_path}")
+    if not zipfile.is_zipfile(pptx_path):
+        raise RuntimeError(f"PPTX file is not a valid zip package: {pptx_path.name}")
 
     pdf_path = pptx_path.with_suffix(".pdf")
     converter = _find_office_converter()
     if converter:
         started_at = time.time()
-        with tempfile.TemporaryDirectory(prefix="pptx_to_pdf_", dir=ROOT) as temp_dir_raw:
+        with tempfile.TemporaryDirectory(prefix="pptx_to_pdf_") as temp_dir_raw:
             temp_dir = Path(temp_dir_raw)
+            profile_dir = temp_dir / "lo-profile"
+            profile_dir.mkdir(parents=True, exist_ok=True)
             temp_pptx = temp_dir / "source.pptx"
             temp_pdf = temp_dir / "source.pdf"
             shutil.copy2(pptx_path, temp_pptx)
             env = os.environ.copy()
-            env.setdefault("HOME", str(temp_dir))
-            env.setdefault("LANG", "C.UTF-8")
-            env.setdefault("LC_ALL", "C.UTF-8")
+            env["HOME"] = str(temp_dir)
+            env["LANG"] = "C.UTF-8"
+            env["LC_ALL"] = "C.UTF-8"
             process = subprocess.run(
                 [
                     converter,
                     "--headless",
+                    "--nologo",
+                    "--nodefault",
+                    "--nofirststartwizard",
+                    "--nolockcheck",
+                    "--norestore",
+                    f"-env:UserInstallation=file://{profile_dir.resolve().as_posix()}",
                     "--convert-to",
-                    "pdf",
+                    "pdf:impress_pdf_Export",
                     "--outdir",
                     str(temp_dir.resolve()),
                     str(temp_pptx.resolve()),
@@ -298,9 +308,13 @@ def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
             if process.returncode == 0 and temp_pdf.exists():
                 shutil.move(str(temp_pdf), str(pdf_path))
                 return pdf_path
+            temp_files = ", ".join(item.name for item in temp_dir.iterdir())
         if process.returncode != 0:
             details = (process.stderr or process.stdout or "").strip()
-            raise RuntimeError(f"PDF conversion failed: {details}")
+            raise RuntimeError(
+                f"PDF conversion failed for {pptx_path.name} "
+                f"({pptx_path.stat().st_size} bytes): {details}"
+            )
         if pdf_path.exists():
             return pdf_path
         candidates = [
@@ -321,6 +335,8 @@ def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
         details = (process.stdout or process.stderr or "").strip()
         raise RuntimeError(
             "PDF conversion finished, but PDF file was not created"
+            + f" for {pptx_path.name} ({pptx_path.stat().st_size} bytes)"
+            + (f"; temp files: {temp_files}" if temp_files else "")
             + (f": {details}" if details else "")
         )
 
