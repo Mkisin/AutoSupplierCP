@@ -260,11 +260,155 @@ def _find_office_converter() -> str | None:
     return None
 
 
+def _http_json(
+    url: str,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: int = 120,
+) -> Any:
+    body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method="POST",
+    )
+    try:
+        with DIRECT_HTTP_OPENER.open(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} from {url}: {details}") from exc
+    return json.loads(raw) if raw else {}
+
+
+def _multipart_form_data(fields: dict[str, str], files: dict[str, tuple[str, bytes, str]]) -> tuple[bytes, str]:
+    boundary = f"----AutoSupplierCP{uuid.uuid4().hex}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("ascii"),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("ascii"),
+                str(value).encode("utf-8"),
+                b"\r\n",
+            ]
+        )
+    for name, (filename, content, content_type) in files.items():
+        safe_filename = filename.encode("utf-8", errors="ignore").decode("utf-8")
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("ascii"),
+                (
+                    f'Content-Disposition: form-data; name="{name}"; '
+                    f'filename="{safe_filename}"\r\n'
+                ).encode("utf-8"),
+                f"Content-Type: {content_type}\r\n\r\n".encode("ascii"),
+                content,
+                b"\r\n",
+            ]
+        )
+    chunks.append(f"--{boundary}--\r\n".encode("ascii"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def _convert_pptx_to_pdf_ilovepdf(pptx_path: Path) -> Path | None:
+    public_key = os.environ.get("ILOVEPDF_PUBLIC_KEY", "").strip()
+    if not public_key:
+        return None
+
+    region = os.environ.get("ILOVEPDF_REGION", "eu").strip() or "eu"
+    auth = _http_json(
+        "https://api.ilovepdf.com/v1/auth",
+        {"public_key": public_key},
+        timeout=30,
+    )
+    token = str(auth.get("token") or "").strip()
+    if not token:
+        raise RuntimeError("iLovePDF auth did not return a token")
+    auth_headers = {"Authorization": f"Bearer {token}"}
+
+    start = _http_json(
+        f"https://api.ilovepdf.com/v1/start/officepdf/{region}",
+        {},
+        auth_headers,
+        timeout=30,
+    )
+    server = str(start.get("server") or "").strip()
+    task = str(start.get("task") or "").strip()
+    if not server or not task:
+        raise RuntimeError(f"iLovePDF start did not return server/task: {start}")
+    server_url = server if server.startswith("http") else f"https://{server}"
+
+    upload_body, upload_type = _multipart_form_data(
+        {"task": task},
+        {
+            "file": (
+                "source.pptx",
+                pptx_path.read_bytes(),
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )
+        },
+    )
+    upload_req = urllib.request.Request(
+        f"{server_url}/v1/upload",
+        data=upload_body,
+        headers={**auth_headers, "Content-Type": upload_type},
+        method="POST",
+    )
+    try:
+        with DIRECT_HTTP_OPENER.open(upload_req, timeout=120) as resp:
+            upload = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"iLovePDF upload failed HTTP {exc.code}: {details}") from exc
+
+    server_filename = str(upload.get("server_filename") or "").strip()
+    if not server_filename:
+        raise RuntimeError(f"iLovePDF upload did not return server_filename: {upload}")
+
+    process = _http_json(
+        f"{server_url}/v1/process",
+        {
+            "task": task,
+            "tool": "officepdf",
+            "files": [{"server_filename": server_filename, "filename": pptx_path.name}],
+        },
+        auth_headers,
+        timeout=180,
+    )
+    status = str(process.get("status") or "").strip()
+    if status and status not in {"TaskSuccess", "TaskSuccessWithWarnings"}:
+        raise RuntimeError(f"iLovePDF process failed: {process}")
+
+    download_req = urllib.request.Request(
+        f"{server_url}/v1/download/{task}",
+        headers=auth_headers,
+        method="GET",
+    )
+    try:
+        with DIRECT_HTTP_OPENER.open(download_req, timeout=120) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"iLovePDF download failed HTTP {exc.code}: {details}") from exc
+    if not data.startswith(b"%PDF"):
+        raise RuntimeError(f"iLovePDF download did not return a PDF ({len(data)} bytes)")
+
+    pdf_path = pptx_path.with_suffix(".pdf")
+    pdf_path.write_bytes(data)
+    return pdf_path
+
+
 def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
     if not pptx_path.exists():
         raise RuntimeError(f"PPTX file not found: {pptx_path}")
     if not zipfile.is_zipfile(pptx_path):
         raise RuntimeError(f"PPTX file is not a valid zip package: {pptx_path.name}")
+
+    external_pdf = _convert_pptx_to_pdf_ilovepdf(pptx_path)
+    if external_pdf is not None:
+        return external_pdf
 
     pdf_path = pptx_path.with_suffix(".pdf")
     converter = _find_office_converter()
