@@ -1230,7 +1230,14 @@ async function pollPresentationJob(jobId) {
     if (job.status === "done") {
       saveStatus.classList.remove("error");
       const openText = job.openStatus === "opened" ? " Файл открыт на компьютере." : "";
-      saveStatus.innerHTML = `Готово: <a href="${job.downloadUrl}" target="_blank" rel="noreferrer">${job.fileName}</a>${openText}`;
+      const pdfLink = job.pdfDownloadUrl
+        ? `<a href="${job.pdfDownloadUrl}" target="_blank" rel="noreferrer">${job.pdfFileName || "PDF"}</a>`
+        : "";
+      const pptxLink = job.downloadUrl
+        ? `<a href="${job.downloadUrl}" target="_blank" rel="noreferrer">${job.fileName || "PPTX"}</a>`
+        : "";
+      const links = [pdfLink, pptxLink].filter(Boolean).join(" | ");
+      saveStatus.innerHTML = `Готово: ${links || "файл сформирован."}${openText}`;
       return;
     }
     if (job.status === "error") {
