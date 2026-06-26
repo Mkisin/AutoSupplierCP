@@ -249,7 +249,136 @@ def _open_local_file(path: Path) -> str:
         return f"open_failed: {exc}"
 
 
-def _run_presentation_job(job_id: str, company: str, selection: dict[str, Any] | None = None) -> None:
+def _find_office_converter() -> str | None:
+    configured = os.environ.get("PPTX_TO_PDF_CONVERTER", "").strip()
+    if configured:
+        return configured
+    for candidate in ("soffice", "libreoffice"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return None
+
+
+def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
+    if not pptx_path.exists():
+        raise RuntimeError(f"PPTX file not found: {pptx_path}")
+
+    pdf_path = pptx_path.with_suffix(".pdf")
+    converter = _find_office_converter()
+    if converter:
+        process = subprocess.run(
+            [
+                converter,
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(pptx_path.parent.resolve()),
+                str(pptx_path.resolve()),
+            ],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        if process.returncode != 0:
+            details = (process.stderr or process.stdout or "").strip()
+            raise RuntimeError(f"PDF conversion failed: {details}")
+        if pdf_path.exists():
+            return pdf_path
+        raise RuntimeError("PDF conversion finished, but PDF file was not created")
+
+    if os.name == "nt":
+        try:
+            import win32com.client  # type: ignore[import-not-found]
+        except Exception:
+            win32com = None
+
+        if win32com is not None:
+            powerpoint = None
+            presentation = None
+            try:
+                powerpoint = win32com.client.DispatchEx("PowerPoint.Application")
+                powerpoint.Visible = True
+                presentation = powerpoint.Presentations.Open(str(pptx_path.resolve()), True, False, True)
+                presentation.SaveAs(str(pdf_path.resolve()), 32)
+            finally:
+                if presentation is not None:
+                    presentation.Close()
+                if powerpoint is not None:
+                    powerpoint.Quit()
+            if pdf_path.exists():
+                return pdf_path
+
+        script = """
+param([string]$pptxArg, [string]$pdfArg)
+$ErrorActionPreference = 'Stop'
+$pptx = [System.IO.Path]::GetFullPath($pptxArg)
+$pdf = [System.IO.Path]::GetFullPath($pdfArg)
+$powerpoint = $null
+$presentation = $null
+try {
+  $powerpoint = New-Object -ComObject PowerPoint.Application
+  $powerpoint.Visible = -1
+  $presentation = $powerpoint.Presentations.Open($pptx, $true, $false, $true)
+  $presentation.SaveAs($pdf, 32)
+} finally {
+  if ($presentation -ne $null) { $presentation.Close() }
+  if ($powerpoint -ne $null) { $powerpoint.Quit() }
+}
+"""
+        script_path: Path | None = None
+        try:
+            script_file = tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8-sig",
+                delete=False,
+                dir=ROOT,
+                prefix="pptx_to_pdf_",
+                suffix=".ps1",
+            )
+            script_path = Path(script_file.name)
+            script_file.write(script)
+            script_file.close()
+            process = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script_path),
+                    str(pptx_path.resolve()),
+                    str(pdf_path.resolve()),
+                ],
+                cwd=ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                timeout=120,
+            )
+        finally:
+            if script_path:
+                script_path.unlink(missing_ok=True)
+        if process.returncode != 0:
+            details = (process.stderr or process.stdout or "").strip()
+            raise RuntimeError(f"PowerPoint PDF conversion failed: {details}")
+        if pdf_path.exists():
+            return pdf_path
+
+    raise RuntimeError("PDF conversion requires LibreOffice/soffice or Microsoft PowerPoint")
+
+
+def _run_presentation_job(
+    job_id: str,
+    company: str,
+    selection: dict[str, Any] | None = None,
+    make_pdf: bool = False,
+) -> None:
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     if selection:
@@ -318,6 +447,11 @@ def _run_presentation_job(job_id: str, company: str, selection: dict[str, Any] |
         if not created.exists():
             raise RuntimeError("Презентация не была создана")
 
+        pdf_path: Path | None = None
+        if make_pdf:
+            _set_presentation_job(job_id, status="running", progress=96, message="Конвертирую презентацию в PDF")
+            pdf_path = _convert_pptx_to_pdf(created)
+
         open_status = _open_local_file(created)
         _set_presentation_job(
             job_id,
@@ -326,6 +460,12 @@ def _run_presentation_job(job_id: str, company: str, selection: dict[str, Any] |
             message="Презентация готова",
             fileName=created.name,
             downloadUrl=f"/api/presentations/{urllib.parse.quote(created.name)}",
+            pdfFileName=pdf_path.name if pdf_path is not None else None,
+            pdfDownloadUrl=(
+                f"/api/presentations/{urllib.parse.quote(pdf_path.name)}"
+                if pdf_path is not None
+                else None
+            ),
             openStatus=open_status,
             report=report,
         )
@@ -1459,7 +1599,7 @@ def _default_selection_from_report(report: dict[str, Any], provider: str) -> dic
             "source": report.get("stats_source", ""),
             "category": replacements.get("{{block3}}", report.get("category", "")),
             "contracts": replacements.get("{{block6}}", ""),
-            "average_check": replacements.get("{{block27}}") or replacements.get("{{block7}}", ""),
+            "average_check": replacements.get("{{block31}}", ""),
             "contracts_per_supplier": replacements.get("{{block8}}", ""),
             "buyers": replacements.get("{{block9}}", ""),
         },
@@ -2153,6 +2293,7 @@ def build_presentation(payload: dict[str, Any]) -> dict[str, Any]:
     worker = threading.Thread(
         target=_run_presentation_job,
         args=(job_id, company, selection_item.get("selection") or {}),
+        kwargs={"make_pdf": True},
         daemon=True,
     )
     worker.start()
@@ -2167,11 +2308,17 @@ def presentation_job(job_id: str) -> dict[str, Any]:
 @app.get("/api/presentations/{filename}")
 def download_presentation(filename: str) -> FileResponse:
     target = _safe_root_file(filename)
-    if not target.exists() or target.suffix.lower() != ".pptx":
+    suffix = target.suffix.lower()
+    if not target.exists() or suffix not in {".pptx", ".pdf"}:
         raise HTTPException(status_code=404, detail="Презентация не найдена")
+    media_type = (
+        "application/pdf"
+        if suffix == ".pdf"
+        else "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
     return FileResponse(
         target,
-        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        media_type=media_type,
         filename=target.name,
     )
 
@@ -2320,6 +2467,12 @@ def _bitrix_get_deal_data(deal_id: str, webhook_url: str, field_map: dict[str, s
         if webs and not card.get("website"):
             card["website"] = str(webs[0].get("VALUE", "")).strip()
 
+    company_field = field_map.get("companyName", "")
+    if not card.get("companyName") and company_field:
+        card["companyName"] = _bitrix_field_value_to_text(fields_meta, company_field, deal.get(company_field))
+    if not card.get("companyName"):
+        card["companyName"] = str(deal.get("TITLE") or "").strip()
+
     contact_id = str(deal.get("CONTACT_ID") or "").strip()
     if contact_id and contact_id != "0":
         contact = _bitrix_call(webhook_url, "crm.contact.get", {"id": contact_id}) or {}
@@ -2370,6 +2523,14 @@ def _bitrix_get_lead_data(lead_id: str, webhook_url: str, field_map: dict[str, s
         if value:
             card[app_field] = value
 
+    if not card.get("companyName"):
+        card["companyName"] = str(
+            lead.get("COMPANY_TITLE")
+            or lead.get("TITLE")
+            or lead.get("NAME")
+            or ""
+        ).strip()
+
     name_field = field_map.get("contactName", "NAME")
     last_name_field = field_map.get("contactLastName", "LAST_NAME")
     name = _bitrix_field_value_to_text(fields_meta, name_field, lead.get(name_field))
@@ -2400,19 +2561,19 @@ def _bitrix_get_card_data(entity_type: str, entity_id: str, webhook_url: str, fi
     raise RuntimeError(f"Unknown Bitrix24 entity type: {entity_type}")
 
 
-def _bitrix_upload_pptx(webhook_url: str, entity_type: str, entity_id: str, pptx_path: Path, file_field: str) -> None:
+def _bitrix_upload_file(webhook_url: str, entity_type: str, entity_id: str, file_path: Path, file_field: str) -> None:
     if not file_field or file_field == "UF_CRM_XXXX":
         raise RuntimeError("presentationFileField не настроен в bitrix_config.json")
     if entity_type not in {"deal", "lead"}:
         raise RuntimeError(f"Unknown Bitrix24 entity type: {entity_type}")
     import base64
-    content_b64 = base64.b64encode(pptx_path.read_bytes()).decode("ascii")
+    content_b64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
     _bitrix_call(
         webhook_url,
         f"crm.{entity_type}.update",
         {
             "id": entity_id,
-            "fields": {file_field: {"fileData": [pptx_path.name, content_b64]}},
+            "fields": {file_field: {"fileData": [file_path.name, content_b64]}},
         },
     )
 
@@ -2499,17 +2660,20 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
             progress=5,
             message="Задача от Битрикс24",
         )
-        _run_presentation_job(pptx_job_id, company, final_selection)
+        _run_presentation_job(pptx_job_id, company, final_selection, make_pdf=True)
         pptx_job = _get_presentation_job(pptx_job_id)
 
         if pptx_job.get("status") != "done":
             raise RuntimeError(pptx_job.get("error") or "Презентация не была собрана")
 
-        pptx_path = ROOT / pptx_job["fileName"]
+        pdf_file_name = str(pptx_job.get("pdfFileName") or "").strip()
+        if not pdf_file_name:
+            raise RuntimeError("PDF presentation was not created")
+        pdf_path = ROOT / pdf_file_name
 
         _set_bitrix_job(job_id, progress=90, message="Загружаю презентацию в Битрикс24")
 
-        _bitrix_upload_pptx(webhook_url, entity_type, entity_id, pptx_path, file_field)
+        _bitrix_upload_file(webhook_url, entity_type, entity_id, pdf_path, file_field)
         _set_bitrix_job(job_id, progress=95, message="Finishing Bitrix24 update")
         if entity_type == "deal":
             _bitrix_move_deal_stage(webhook_url, entity_id, BITRIX_AFTER_PRESENTATION_STAGE_ID)
@@ -2521,6 +2685,8 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
             message="Презентация готова и загружена в Битрикс24",
             fileName=pptx_job["fileName"],
             downloadUrl=pptx_job.get("downloadUrl"),
+            pdfFileName=pdf_file_name,
+            pdfDownloadUrl=pptx_job.get("pdfDownloadUrl"),
             selectedPhotos=_selected_photo_summary(final_selection),
         )
 

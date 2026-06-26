@@ -1176,121 +1176,6 @@ def shape_text(shape):
     return "".join(t.text or "" for t in shape.findall(".//a:t", NS)).strip()
 
 
-def apply_average_check_style(shape):
-    for run in shape.findall(".//a:r", NS):
-        text_node = run.find("a:t", NS)
-        if text_node is None or not str(text_node.text or "").strip():
-            continue
-        rpr = run.find("a:rPr", NS)
-        if rpr is None:
-            rpr = ET.SubElement(run, qn(A, "rPr"))
-        rpr.set("sz", "3600")
-        rpr.set("spc", "-25")
-        solid = rpr.find("a:solidFill", NS)
-        if solid is None:
-            solid = ET.SubElement(rpr, qn(A, "solidFill"))
-        for child in list(solid):
-            solid.remove(child)
-        ET.SubElement(solid, qn(A, "srgbClr"), {"val": "245BA9"})
-        if rpr.find("a:latin", NS) is None:
-            ET.SubElement(rpr, qn(A, "latin"), {"typeface": "Century Gothic"})
-        if rpr.find("a:cs", NS) is None:
-            ET.SubElement(rpr, qn(A, "cs"), {"typeface": "Century Gothic"})
-
-
-def copy_first_run_style(source_shape, target_shape):
-    source_run = next(
-        (
-            run
-            for run in source_shape.findall(".//a:r", NS)
-            if "".join(node.text or "" for node in run.findall(".//a:t", NS)).strip()
-        ),
-        None,
-    )
-    target_run = next(
-        (
-            run
-            for run in target_shape.findall(".//a:r", NS)
-            if "".join(node.text or "" for node in run.findall(".//a:t", NS)).strip()
-        ),
-        None,
-    )
-    if source_run is None or target_run is None:
-        return
-    source_rpr = source_run.find("a:rPr", NS)
-    if source_rpr is None:
-        return
-    target_rpr = target_run.find("a:rPr", NS)
-    if target_rpr is not None:
-        target_run.remove(target_rpr)
-    target_run.insert(0, ET.fromstring(ET.tostring(source_rpr, encoding="utf-8")))
-
-
-def set_first_text(shape, value):
-    text_nodes = shape.findall(".//a:t", NS)
-    if not text_nodes:
-        return
-    text_nodes[0].text = str(value)
-    for node in text_nodes[1:]:
-        node.text = ""
-    remove_empty_text_runs(shape)
-
-
-def normalize_average_check_shape(root, replacements):
-    source_value = str(replacements.get("{{block6}}", "")).strip()
-    target_value = str(replacements.get("{{block27}}") or replacements.get("{{block7}}", "")).strip()
-    if not source_value or not target_value:
-        return
-    source_shape = None
-    target_shape = None
-    for shape in root.findall(".//p:sp", NS):
-        text = "".join(node.text or "" for node in shape.findall(".//a:t", NS)).strip()
-        if text == source_value:
-            source_shape = shape
-        elif text == target_value:
-            target_shape = shape
-    if source_shape is None or target_shape is None:
-        return
-
-    source_xfrm = source_shape.find(".//a:xfrm", NS)
-    target_xfrm = target_shape.find(".//a:xfrm", NS)
-    if source_xfrm is None or target_xfrm is None:
-        copy_first_run_style(source_shape, target_shape)
-        return
-
-    replacement = ET.fromstring(ET.tostring(source_shape, encoding="utf-8"))
-    replacement_xfrm = replacement.find(".//a:xfrm", NS)
-    if replacement_xfrm is not None:
-        replacement_off = replacement_xfrm.find("a:off", NS)
-        replacement_ext = replacement_xfrm.find("a:ext", NS)
-        target_off = target_xfrm.find("a:off", NS)
-        target_ext = target_xfrm.find("a:ext", NS)
-        if replacement_off is not None and target_off is not None:
-            replacement_off.attrib.update(target_off.attrib)
-        if replacement_ext is not None and target_ext is not None:
-            replacement_ext.attrib.update(target_ext.attrib)
-
-    c_nv_pr = replacement.find(".//p:cNvPr", NS)
-    target_c_nv_pr = target_shape.find(".//p:cNvPr", NS)
-    if c_nv_pr is not None and target_c_nv_pr is not None:
-        c_nv_pr.attrib.update(target_c_nv_pr.attrib)
-
-    set_first_text(replacement, target_value)
-
-    sp_tree = root.find(".//p:spTree", NS)
-    if sp_tree is None:
-        copy_first_run_style(source_shape, target_shape)
-        return
-    children = list(sp_tree)
-    try:
-        index = children.index(target_shape)
-    except ValueError:
-        copy_first_run_style(source_shape, target_shape)
-        return
-    sp_tree.remove(target_shape)
-    sp_tree.insert(index, replacement)
-
-
 def remove_empty_text_runs(shape):
     for paragraph in shape.findall(".//a:p", NS):
         for run in list(paragraph):
@@ -1330,8 +1215,6 @@ def replace_text(root, replacements):
             text_nodes[0].text = str(value)
             for node in text_nodes[1:]:
                 node.text = ""
-            if key in {"{{block7}}", "{{block27}}"}:
-                apply_average_check_style(shape)
             remove_empty_text_runs(shape)
             break
 
@@ -1357,24 +1240,18 @@ def replace_text(root, replacements):
             continue
         new_text = combined
         replaced_any = False
-        replaced_average_check = False
         for key, value in replacements.items():
             if key in new_text:
                 counts[key] += new_text.count(key)
                 new_text = new_text.replace(key, value)
                 replaced_any = True
-                if key in {"{{block7}}", "{{block27}}"}:
-                    replaced_average_check = True
         if new_text != combined:
             if replaced_any and "{{" not in new_text:
                 new_text = new_text.replace("\t", "").strip()
             text_nodes[0].text = new_text
             for node in text_nodes[1:]:
                 node.text = ""
-            if replaced_average_check:
-                apply_average_check_style(shape)
             remove_empty_text_runs(shape)
-    normalize_average_check_shape(root, replacements)
     return counts
 
 
@@ -1429,10 +1306,6 @@ def missing_text_keys(counts):
         if value != 0:
             continue
         if key == "{{block1}}" and counts.get("{{block1 }}", 0) > 0:
-            continue
-        if key == "{{block7}}" and counts.get("{{block27}}", 0) > 0:
-            continue
-        if key == "{{block27}}" and counts.get("{{block7}}", 0) > 0:
             continue
         missing.append(key)
     return missing

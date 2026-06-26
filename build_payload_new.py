@@ -290,12 +290,18 @@ def quoted_category(value):
 
 
 def recipient_block(contact_value, position_value):
-    lines = ["Получатель"]
-    if contact_value:
-        lines.append(contact_value + ("," if position_value else ""))
-    if position_value:
-        lines.append(position_value)
-    return "\n".join(lines)
+    contact_value = str(contact_value or "").strip()
+    position_value = str(position_value or "").strip()
+    suffix = ", ".join(item for item in (contact_value, position_value) if item)
+    return f"Получатель {suffix}".strip()
+
+
+def first_slide_title(company_value):
+    company_value = str(company_value or "").strip()
+    return (
+        f"Как компании «{company_value}» получить 5-10 контрактов "
+        "с розничными сетями на Центре Закупок Сетей: WorldFood 2026"
+    )
 
 
 def stat_value(field, allow_decimal=False):
@@ -311,6 +317,19 @@ def stat_value(field, allow_decimal=False):
     if allow_decimal:
         return f"{number:g}"
     return str(int(round(number)))
+
+
+def average_check_value(field):
+    value = stat.get(field, "")
+    text = str(value).strip()
+    if not text:
+        return ""
+    number_text = text.replace(" ", "").replace(",", ".")
+    try:
+        number = float(number_text)
+    except ValueError:
+        return text.replace(",", ".")
+    return f"{number:.1f}"
 
 def words(value):
     return {
@@ -717,14 +736,13 @@ payload = {
     "stats_source": stats_source,
     "stats_record": stat,
     "replacements": {
-        "{{block1}}": company,
-        "{{block1 }}": company,
-        "{{block2}}": recipient_block(contact, position),
+        "{{block1}}": recipient_block(contact, position),
+        "{{block1 }}": recipient_block(contact, position),
+        "{{block2}}": first_slide_title(company),
         "{{block3}}": quoted_category(category),
         "{{block4}}": f"переговоров с сетями по категории {quoted_category(category)}",
         "{{block5}}": f"{first_name_patronymic(contact)}, ознакомьтесь с итогами последнего ЦЗС™ по категории {quoted_category(category)}",
         "{{block6}}": stat_value("Контрактов"),
-        "{{block7}}": stat_value("Средний чек", allow_decimal=True),
         "{{block8}}": stat_value("Заключенных контрактов на одного поставщика"),
         "{{block9}}": stat_value("Закупщики по вашей категории"),
         "{{block10}}": stat_value("Федеральных сетей"),
@@ -744,7 +762,7 @@ payload = {
         "{{block24}}": first_name(contact),
         "{{block25}}": stat_value("2025 переговоров"),
         "{{block26}}": stat_value("2025 контрактов"),
-        "{{block27}}": stat_value("Средний чек", allow_decimal=True),
+        "{{block31}}": average_check_value("Средний чек"),
     },
 }
 
