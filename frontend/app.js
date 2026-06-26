@@ -1227,6 +1227,10 @@ async function pollPresentationJob(jobId) {
     }
 
     updatePresentationProgress(job);
+    if (job.status === "running" && job.downloadUrl) {
+      saveStatus.classList.remove("error");
+      saveStatus.innerHTML = `PPTX готов, PDF формируется: <a href="${job.downloadUrl}" target="_blank" rel="noreferrer">${job.fileName || "PPTX"}</a>`;
+    }
     if (job.status === "done") {
       saveStatus.classList.remove("error");
       const openText = job.openStatus === "opened" ? " Файл открыт на компьютере." : "";
@@ -1237,7 +1241,8 @@ async function pollPresentationJob(jobId) {
         ? `<a href="${job.downloadUrl}" target="_blank" rel="noreferrer">${job.fileName || "PPTX"}</a>`
         : "";
       const links = [pdfLink, pptxLink].filter(Boolean).join(" | ");
-      saveStatus.innerHTML = `Готово: ${links || "файл сформирован."}${openText}`;
+      const pdfError = job.pdfError ? ` PDF не создан: ${job.pdfError}` : "";
+      saveStatus.innerHTML = `Готово: ${links || "файл сформирован."}${openText}${pdfError}`;
       return;
     }
     if (job.status === "error") {

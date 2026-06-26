@@ -267,6 +267,7 @@ def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
     pdf_path = pptx_path.with_suffix(".pdf")
     converter = _find_office_converter()
     if converter:
+        started_at = time.time()
         process = subprocess.run(
             [
                 converter,
@@ -289,7 +290,26 @@ def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
             raise RuntimeError(f"PDF conversion failed: {details}")
         if pdf_path.exists():
             return pdf_path
-        raise RuntimeError("PDF conversion finished, but PDF file was not created")
+        candidates = [
+            item
+            for item in pptx_path.parent.glob("*.pdf")
+            if item.is_file() and item.stat().st_mtime >= started_at - 2
+        ]
+        if candidates:
+            candidates.sort(key=lambda item: (item.stem == pptx_path.stem, item.stat().st_mtime), reverse=True)
+            created_pdf = candidates[0]
+            if created_pdf != pdf_path:
+                try:
+                    created_pdf.replace(pdf_path)
+                    return pdf_path
+                except Exception:
+                    return created_pdf
+            return created_pdf
+        details = (process.stdout or process.stderr or "").strip()
+        raise RuntimeError(
+            "PDF conversion finished, but PDF file was not created"
+            + (f": {details}" if details else "")
+        )
 
     if os.name == "nt":
         try:
@@ -378,6 +398,7 @@ def _run_presentation_job(
     company: str,
     selection: dict[str, Any] | None = None,
     make_pdf: bool = False,
+    require_pdf: bool = False,
 ) -> None:
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
@@ -447,12 +468,29 @@ def _run_presentation_job(
         if not created.exists():
             raise RuntimeError("Презентация не была создана")
 
+        open_status = _open_local_file(created)
+        _set_presentation_job(
+            job_id,
+            status="running",
+            progress=94 if make_pdf else 100,
+            message="PPTX готов, начинаю конвертацию в PDF" if make_pdf else "Презентация готова",
+            fileName=created.name,
+            downloadUrl=f"/api/presentations/{urllib.parse.quote(created.name)}",
+            openStatus=open_status,
+            report=report,
+        )
+
         pdf_path: Path | None = None
+        pdf_error: str | None = None
         if make_pdf:
             _set_presentation_job(job_id, status="running", progress=96, message="Конвертирую презентацию в PDF")
-            pdf_path = _convert_pptx_to_pdf(created)
+            try:
+                pdf_path = _convert_pptx_to_pdf(created)
+            except Exception as exc:
+                pdf_error = str(exc) or "PDF conversion failed"
+                if require_pdf:
+                    raise
 
-        open_status = _open_local_file(created)
         _set_presentation_job(
             job_id,
             status="done",
@@ -466,6 +504,7 @@ def _run_presentation_job(
                 if pdf_path is not None
                 else None
             ),
+            pdfError=pdf_error,
             openStatus=open_status,
             report=report,
         )
@@ -2661,7 +2700,7 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
             progress=5,
             message="Задача от Битрикс24",
         )
-        _run_presentation_job(pptx_job_id, company, final_selection, make_pdf=True)
+        _run_presentation_job(pptx_job_id, company, final_selection, make_pdf=True, require_pdf=True)
         pptx_job = _get_presentation_job(pptx_job_id)
 
         if pptx_job.get("status") != "done":
