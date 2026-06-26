@@ -281,8 +281,7 @@ def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
             env["HOME"] = str(temp_dir)
             env["LANG"] = "C.UTF-8"
             env["LC_ALL"] = "C.UTF-8"
-            process = subprocess.run(
-                [
+            base_command = [
                     converter,
                     "--headless",
                     "--nologo",
@@ -291,6 +290,10 @@ def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
                     "--nolockcheck",
                     "--norestore",
                     f"-env:UserInstallation=file://{profile_dir.resolve().as_posix()}",
+            ]
+            process = subprocess.run(
+                [
+                    *base_command,
                     "--convert-to",
                     "pdf:impress_pdf_Export",
                     "--outdir",
@@ -308,9 +311,35 @@ def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
             if process.returncode == 0 and temp_pdf.exists():
                 shutil.move(str(temp_pdf), str(pdf_path))
                 return pdf_path
+            first_stdout = process.stdout
+            first_stderr = process.stderr
+            process = subprocess.run(
+                [
+                    *base_command,
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    str(temp_dir.resolve()),
+                    str(temp_pptx.resolve()),
+                ],
+                cwd=ROOT,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                timeout=120,
+            )
+            if process.returncode == 0 and temp_pdf.exists():
+                shutil.move(str(temp_pdf), str(pdf_path))
+                return pdf_path
             temp_files = ", ".join(item.name for item in temp_dir.iterdir())
         if process.returncode != 0:
-            details = (process.stderr or process.stdout or "").strip()
+            details = "\n".join(
+                part.strip()
+                for part in (first_stderr, first_stdout, process.stderr, process.stdout)
+                if part and part.strip()
+            )
             raise RuntimeError(
                 f"PDF conversion failed for {pptx_path.name} "
                 f"({pptx_path.stat().st_size} bytes): {details}"
@@ -332,7 +361,11 @@ def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
                 except Exception:
                     return created_pdf
             return created_pdf
-        details = (process.stdout or process.stderr or "").strip()
+        details = "\n".join(
+            part.strip()
+            for part in (first_stderr, first_stdout, process.stderr, process.stdout)
+            if part and part.strip()
+        )
         raise RuntimeError(
             "PDF conversion finished, but PDF file was not created"
             + f" for {pptx_path.name} ({pptx_path.stat().st_size} bytes)"

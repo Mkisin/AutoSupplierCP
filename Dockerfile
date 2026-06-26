@@ -8,7 +8,10 @@ ENV PPTX_TO_PDF_CONVERTER=/usr/bin/soffice
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        default-jre-headless \
         libreoffice \
+        libreoffice-impress \
+        libreoffice-java-common \
         fonts-dejavu \
         fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
