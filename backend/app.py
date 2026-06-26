@@ -282,6 +282,25 @@ def _http_json(
     return json.loads(raw) if raw else {}
 
 
+def _http_get_json(
+    url: str,
+    headers: dict[str, str] | None = None,
+    timeout: int = 120,
+) -> Any:
+    req = urllib.request.Request(
+        url,
+        headers=headers or {},
+        method="GET",
+    )
+    try:
+        with DIRECT_HTTP_OPENER.open(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} from {url}: {details}") from exc
+    return json.loads(raw) if raw else {}
+
+
 def _multipart_form_data(fields: dict[str, str], files: dict[str, tuple[str, bytes, str]]) -> tuple[bytes, str]:
     boundary = f"----AutoSupplierCP{uuid.uuid4().hex}"
     chunks: list[bytes] = []
@@ -327,9 +346,9 @@ def _convert_pptx_to_pdf_ilovepdf(pptx_path: Path) -> Path | None:
         raise RuntimeError("iLovePDF auth did not return a token")
     auth_headers = {"Authorization": f"Bearer {token}"}
 
-    start = _http_json(
-        "https://api.ilovepdf.com/v1/start/officepdf",
-        {},
+    region = os.environ.get("ILOVEPDF_REGION", "eu").strip() or "eu"
+    start = _http_get_json(
+        f"https://api.ilovepdf.com/v1/start/officepdf/{region}",
         auth_headers,
         timeout=30,
     )

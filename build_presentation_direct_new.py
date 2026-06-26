@@ -1186,6 +1186,63 @@ def remove_empty_text_runs(shape):
             paragraph.remove(run)
 
 
+def replace_split_text_placeholders(text_nodes, replacements):
+    counts = {key: 0 for key in replacements}
+    if len(text_nodes) <= 1:
+        return counts
+
+    while True:
+        combined = "".join(node.text or "" for node in text_nodes)
+        if not combined:
+            return counts
+
+        match = None
+        for key, value in replacements.items():
+            index = combined.find(key)
+            if index < 0:
+                continue
+            if match is None or index < match[0]:
+                match = (index, key, str(value))
+        if match is None:
+            return counts
+
+        start, key, value = match
+        end = start + len(key)
+        offsets = []
+        cursor = 0
+        for node in text_nodes:
+            text = node.text or ""
+            next_cursor = cursor + len(text)
+            offsets.append((cursor, next_cursor, text))
+            cursor = next_cursor
+
+        first_index = None
+        last_index = None
+        for index, (node_start, node_end, _) in enumerate(offsets):
+            if node_end <= start or node_start >= end:
+                continue
+            if first_index is None:
+                first_index = index
+            last_index = index
+
+        if first_index is None or last_index is None:
+            return counts
+
+        first_start, _, first_text = offsets[first_index]
+        last_start, _, last_text = offsets[last_index]
+        prefix = first_text[: start - first_start]
+        suffix = last_text[end - last_start :]
+
+        if first_index == last_index:
+            text_nodes[first_index].text = prefix + value + suffix
+        else:
+            text_nodes[first_index].text = prefix + value
+            for index in range(first_index + 1, last_index):
+                text_nodes[index].text = ""
+            text_nodes[last_index].text = suffix
+        counts[key] += 1
+
+
 def replace_text(root, replacements):
     counts = {key: 0 for key in replacements}
     block14_value = replacements.get("{{block14}}")
@@ -1230,28 +1287,13 @@ def replace_text(root, replacements):
             text_node.text = new_text
 
     # PowerPoint can split one visible placeholder across several text runs,
-    # for example "{{" + "block9}}". Handle those at shape scope.
+    # for example "{{" + "block9}}". Replace only the placeholder span so
+    # neighboring labels keep their own runs and positions.
     for shape in root.findall(".//p:sp", NS):
         text_nodes = shape.findall(".//a:t", NS)
         if len(text_nodes) <= 1:
             continue
-        combined = "".join(node.text or "" for node in text_nodes)
-        if not combined:
-            continue
-        new_text = combined
-        replaced_any = False
-        for key, value in replacements.items():
-            if key in new_text:
-                counts[key] += new_text.count(key)
-                new_text = new_text.replace(key, value)
-                replaced_any = True
-        if new_text != combined:
-            if replaced_any and "{{" not in new_text:
-                new_text = new_text.replace("\t", "").strip()
-            text_nodes[0].text = new_text
-            for node in text_nodes[1:]:
-                node.text = ""
-            remove_empty_text_runs(shape)
+        merge_counts(counts, replace_split_text_placeholders(text_nodes, replacements))
     return counts
 
 
