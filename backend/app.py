@@ -475,6 +475,7 @@ def _run_presentation_job(
             status="error",
             progress=100,
             message=str(exc) or "Не удалось сформировать презентацию",
+            error=str(exc) or "Не удалось сформировать презентацию",
         )
     finally:
         if stdout_path:
@@ -2664,7 +2665,11 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
         pptx_job = _get_presentation_job(pptx_job_id)
 
         if pptx_job.get("status") != "done":
-            raise RuntimeError(pptx_job.get("error") or "Презентация не была собрана")
+            raise RuntimeError(
+                pptx_job.get("error")
+                or pptx_job.get("message")
+                or "Презентация не была собрана"
+            )
 
         pdf_file_name = str(pptx_job.get("pdfFileName") or "").strip()
         if not pdf_file_name:
