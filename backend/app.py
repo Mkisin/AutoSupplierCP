@@ -268,23 +268,36 @@ def _convert_pptx_to_pdf(pptx_path: Path) -> Path:
     converter = _find_office_converter()
     if converter:
         started_at = time.time()
-        process = subprocess.run(
-            [
-                converter,
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                str(pptx_path.parent.resolve()),
-                str(pptx_path.resolve()),
-            ],
-            cwd=ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            timeout=120,
-        )
+        with tempfile.TemporaryDirectory(prefix="pptx_to_pdf_", dir=ROOT) as temp_dir_raw:
+            temp_dir = Path(temp_dir_raw)
+            temp_pptx = temp_dir / "source.pptx"
+            temp_pdf = temp_dir / "source.pdf"
+            shutil.copy2(pptx_path, temp_pptx)
+            env = os.environ.copy()
+            env.setdefault("HOME", str(temp_dir))
+            env.setdefault("LANG", "C.UTF-8")
+            env.setdefault("LC_ALL", "C.UTF-8")
+            process = subprocess.run(
+                [
+                    converter,
+                    "--headless",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    str(temp_dir.resolve()),
+                    str(temp_pptx.resolve()),
+                ],
+                cwd=ROOT,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                timeout=120,
+            )
+            if process.returncode == 0 and temp_pdf.exists():
+                shutil.move(str(temp_pdf), str(pdf_path))
+                return pdf_path
         if process.returncode != 0:
             details = (process.stderr or process.stdout or "").strip()
             raise RuntimeError(f"PDF conversion failed: {details}")
