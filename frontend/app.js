@@ -39,6 +39,9 @@ const presentationProgress = document.querySelector("#presentationProgress");
 const presentationProgressText = document.querySelector("#presentationProgressText");
 const presentationProgressPercent = document.querySelector("#presentationProgressPercent");
 const presentationProgressBar = document.querySelector("#presentationProgressBar");
+const presentationHistoryRows = document.querySelector("#presentationHistoryRows");
+const presentationHistoryStatus = document.querySelector("#presentationHistoryStatus");
+const refreshPresentationHistoryBtn = document.querySelector("#refreshPresentationHistoryBtn");
 const dadataDetails = document.querySelector("#dadataDetails");
 const dadataGrid = document.querySelector("#dadataGrid");
 const dadataSummary = document.querySelector("#dadataSummary");
@@ -1189,6 +1192,101 @@ async function saveCard(event) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formatHistoryDate(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value).replace("T", " ");
+  }
+  return date.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function historyStatusLabel(item) {
+  if (item.status === "done" || item.event === "PRESENTATION_DONE") {
+    return "Готово";
+  }
+  if (item.status === "error" || item.event === "PRESENTATION_ERROR") {
+    return "Ошибка";
+  }
+  return item.status || item.event || "";
+}
+
+function historyFileLinks(item) {
+  const links = [
+    item.downloadUrl ? `<a href="${escapeHtml(item.downloadUrl)}" target="_blank" rel="noreferrer">${escapeHtml(item.fileName || "PPTX")}</a>` : "",
+    item.pdfDownloadUrl ? `<a href="${escapeHtml(item.pdfDownloadUrl)}" target="_blank" rel="noreferrer">${escapeHtml(item.pdfFileName || "PDF")}</a>` : "",
+    item.templatePdfDownloadUrl ? `<a href="${escapeHtml(item.templatePdfDownloadUrl)}" target="_blank" rel="noreferrer">${escapeHtml(item.templatePdfFileName || "PDF шаблон")}</a>` : "",
+  ].filter(Boolean);
+  if (links.length) {
+    return links.join(" | ");
+  }
+  return escapeHtml(item.error || item.message || "Файлов нет");
+}
+
+function renderPresentationHistory(items) {
+  if (!presentationHistoryRows) {
+    return;
+  }
+  if (!items.length) {
+    presentationHistoryRows.innerHTML = `<tr><td colspan="5">Пока нет записей о сборках.</td></tr>`;
+    return;
+  }
+  presentationHistoryRows.innerHTML = items.map((item) => {
+    const status = historyStatusLabel(item);
+    const statusClass = status === "Ошибка" ? "is-error" : "is-done";
+    return `
+      <tr>
+        <td>${escapeHtml(formatHistoryDate(item.updatedAt || item.createdAt))}</td>
+        <td><strong>${escapeHtml(item.companyName || "Без названия")}</strong><small>${escapeHtml(item.jobId || "")}</small></td>
+        <td>${escapeHtml(item.source || "manual")}${item.sourceEntityId ? `<small>${escapeHtml(item.sourceEntityId)}</small>` : ""}</td>
+        <td><span class="history-status ${statusClass}">${escapeHtml(status)}</span></td>
+        <td>${historyFileLinks(item)}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+async function loadPresentationHistory() {
+  if (!presentationHistoryRows) {
+    return;
+  }
+  if (presentationHistoryStatus) {
+    setStatus(presentationHistoryStatus, "Загружаю историю...");
+  }
+  try {
+    const response = await fetch("/api/presentations/history?limit=100");
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Не удалось загрузить историю");
+    }
+    renderPresentationHistory(payload.items || []);
+    if (presentationHistoryStatus) {
+      setStatus(presentationHistoryStatus, `Записей: ${(payload.items || []).length}`);
+    }
+  } catch (error) {
+    if (presentationHistoryStatus) {
+      setStatus(presentationHistoryStatus, error.message, true);
+    }
+  }
+}
+
 function updatePresentationProgress(job) {
   const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
   const message = job.message || "Формирую презентацию";
@@ -1235,14 +1333,19 @@ async function pollPresentationJob(jobId) {
       saveStatus.classList.remove("error");
       const openText = job.openStatus === "opened" ? " Файл открыт на компьютере." : "";
       const pdfLink = job.pdfDownloadUrl
-        ? `<a href="${job.pdfDownloadUrl}" target="_blank" rel="noreferrer">${job.pdfFileName || "PDF"}</a>`
+        ? `<a href="${job.pdfDownloadUrl}" target="_blank" rel="noreferrer">${job.pdfFileName || "PDF из PPTX"}</a>`
+        : "";
+      const templatePdfLink = job.templatePdfDownloadUrl
+        ? `<a href="${job.templatePdfDownloadUrl}" target="_blank" rel="noreferrer">${job.templatePdfFileName || "PDF из шаблона"}</a>`
         : "";
       const pptxLink = job.downloadUrl
         ? `<a href="${job.downloadUrl}" target="_blank" rel="noreferrer">${job.fileName || "PPTX"}</a>`
         : "";
-      const links = [pdfLink, pptxLink].filter(Boolean).join(" | ");
+      const links = [pptxLink, pdfLink, templatePdfLink].filter(Boolean).join(" | ");
       const pdfError = job.pdfError ? ` PDF не создан: ${job.pdfError}` : "";
-      saveStatus.innerHTML = `Готово: ${links || "файл сформирован."}${openText}${pdfError}`;
+      const templatePdfError = job.templatePdfError ? ` PDF из шаблона не создан: ${job.templatePdfError}` : "";
+      saveStatus.innerHTML = `Готово: ${links || "файл сформирован."}${openText}${pdfError}${templatePdfError}`;
+      loadPresentationHistory();
       return;
     }
     if (job.status === "error") {
@@ -1356,5 +1459,9 @@ async function buildPresentation() {
 }
 
 buildPresentationBtn.addEventListener("click", buildPresentation);
+if (refreshPresentationHistoryBtn) {
+  refreshPresentationHistoryBtn.addEventListener("click", loadPresentationHistory);
+}
 
 loadOptions().catch((error) => setStatus(saveStatus, error.message, true));
+loadPresentationHistory();
