@@ -97,6 +97,16 @@ args = parser.parse_args()
 workbook = read_xlsx("Данные для разработки.xlsx")
 target_company = args.company
 
+payload_override_raw = os.environ.get("PAYLOAD_OVERRIDE_JSON", "").strip()
+payload_override = {}
+if payload_override_raw:
+    try:
+        parsed_payload_override = json.loads(payload_override_raw)
+    except json.JSONDecodeError:
+        parsed_payload_override = {}
+    if isinstance(parsed_payload_override, dict):
+        payload_override = {str(key): str(value) for key, value in parsed_payload_override.items()}
+
 headers = workbook["Карточка клиента"][0]
 records = []
 for row in workbook["Карточка клиента"][1:]:
@@ -116,7 +126,12 @@ client_candidates = [
     )
 ]
 if not client_candidates:
-    raise SystemExit(f"Company not found in Карточка клиента: {target_company}")
+    if payload_override:
+        client = dict(payload_override)
+        if not client.get(headers[1]):
+            client[headers[1]] = target_company
+    else:
+        raise SystemExit(f"Company not found in Карточка клиента: {target_company}")
 
 
 def contact_priority(record):
@@ -130,16 +145,10 @@ def contact_priority(record):
     return 3
 
 
-client = sorted(client_candidates, key=contact_priority)[0]
-
-payload_override_raw = os.environ.get("PAYLOAD_OVERRIDE_JSON", "").strip()
-if payload_override_raw:
-    try:
-        payload_override = json.loads(payload_override_raw)
-    except json.JSONDecodeError:
-        payload_override = {}
-    if isinstance(payload_override, dict):
-        client = {**client, **{str(key): str(value) for key, value in payload_override.items()}}
+if client_candidates:
+    client = sorted(client_candidates, key=contact_priority)[0]
+    if payload_override:
+        client = {**client, **payload_override}
 
 company = client.get("Название компании", "").strip()
 contact = client.get("ФИО контакта", "").strip()

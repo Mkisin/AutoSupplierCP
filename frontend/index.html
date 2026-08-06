@@ -322,6 +322,38 @@
           <button type="submit" class="primary">Запомнить параметры</button>
         </div>
       </form>
+
+      <section class="section-band history-section" aria-labelledby="presentationHistoryTitle">
+        <div class="history-head">
+          <div class="section-title">
+            <span>6</span>
+            <div>
+              <h2 id="presentationHistoryTitle">История презентаций</h2>
+              <p>Последние сборки из локального журнала сервиса и файлов задач.</p>
+            </div>
+          </div>
+          <button type="button" class="secondary compact" id="refreshPresentationHistoryBtn">Обновить</button>
+        </div>
+        <p id="presentationHistoryStatus" class="status muted"></p>
+        <div class="history-table-wrap">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>Дата</th>
+                <th>Компания</th>
+                <th>Источник</th>
+                <th>Статус</th>
+                <th>Файлы</th>
+              </tr>
+            </thead>
+            <tbody id="presentationHistoryRows">
+              <tr>
+                <td colspan="5">История еще загружается.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <script src="app.js?v=20260603-session-ai-key"></script>
