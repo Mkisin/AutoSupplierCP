@@ -25,11 +25,89 @@ BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_TEMPLATE = BASE_DIR / "Шаблон презентации новый.pdf"
 PAGE_WIDTH = 842.25
 PAGE_HEIGHT = 595.5
+REGULAR_FONT_NAMES = (
+    "DejaVuSans.ttf",
+    "LiberationSans-Regular.ttf",
+    "Arial.ttf",
+    "arial.ttf",
+    "calibri.ttf",
+)
+BOLD_FONT_NAMES = (
+    "DejaVuSans-Bold.ttf",
+    "LiberationSans-Bold.ttf",
+    "Arial Bold.ttf",
+    "arialbd.ttf",
+    "calibrib.ttf",
+)
 
 
 def slugify(value: str) -> str:
     slug = re.sub(r"\W+", "_", value, flags=re.UNICODE).strip("_").lower()
     return slug or "presentation"
+
+
+def configured_font_path(env_name: str) -> Path | None:
+    value = os.environ.get(env_name, "").strip()
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path
+
+
+def first_existing_path(paths: list[Path | None]) -> Path | None:
+    return next((path for path in paths if path is not None and path.is_file()), None)
+
+
+def find_installed_font(names: tuple[str, ...]) -> Path | None:
+    wanted = {name.lower() for name in names}
+    roots = [
+        Path("/usr/share/fonts"),
+        Path("/usr/local/share/fonts"),
+        Path.home() / ".fonts",
+    ]
+    for root in roots:
+        if not root.exists():
+            continue
+        try:
+            for path in root.rglob("*"):
+                if path.is_file() and path.name.lower() in wanted:
+                    return path
+        except OSError:
+            continue
+    return None
+
+
+def resolve_template_fonts() -> tuple[Path, Path]:
+    regular_candidates = [
+        configured_font_path("PDF_TEMPLATE_FONT"),
+        BASE_DIR / "fonts" / "DejaVuSans.ttf",
+        BASE_DIR / "fonts" / "LiberationSans-Regular.ttf",
+        Path(r"C:\Windows\Fonts\arial.ttf"),
+        Path(r"C:\Windows\Fonts\calibri.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+    ]
+    bold_candidates = [
+        configured_font_path("PDF_TEMPLATE_BOLD_FONT"),
+        BASE_DIR / "fonts" / "DejaVuSans-Bold.ttf",
+        BASE_DIR / "fonts" / "LiberationSans-Bold.ttf",
+        Path(r"C:\Windows\Fonts\arialbd.ttf"),
+        Path(r"C:\Windows\Fonts\calibrib.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"),
+    ]
+    regular_font = first_existing_path(regular_candidates) or find_installed_font(REGULAR_FONT_NAMES)
+    if regular_font is None:
+        raise RuntimeError(
+            "PDF template font not found. Set PDF_TEMPLATE_FONT to a readable .ttf/.otf file "
+            "or install fonts-dejavu/fonts-liberation."
+        )
+    bold_font = first_existing_path(bold_candidates) or find_installed_font(BOLD_FONT_NAMES) or regular_font
+    return regular_font, bold_font
 
 
 def next_available_path(path: Path) -> Path:
@@ -338,6 +416,7 @@ def write_text(
     text: str,
     field: dict[str, Any],
     font_file: Path | None,
+    font_name: str = "pdfgenfont",
 ) -> dict[str, Any]:
     warnings: list[str] = []
     fontsize = float(field.get("font_size", 12))
@@ -380,7 +459,7 @@ def write_text(
             box,
             text,
             fontsize=size,
-            fontname="pdfgenfont",
+            fontname=font_name,
             fontfile=str(font_file) if font_file else None,
             color=color,
             align=align,
@@ -430,19 +509,7 @@ def build_pdf(
     if output_path is None:
         output_path = next_available_path(BASE_DIR / f"{slugify(str(payload['company']))}_ЦЗС_pdf_template.pdf")
 
-    configured_font = os.environ.get("PDF_TEMPLATE_FONT", "").strip()
-    font_candidates = [
-        Path(configured_font) if configured_font else None,
-        Path(r"C:\Windows\Fonts\arial.ttf"),
-        Path(r"C:\Windows\Fonts\calibri.ttf"),
-    ]
-    font_file = next((path for path in font_candidates if path is not None and path.is_file()), None)
-    bold_font_candidates = [
-        Path(r"C:\Windows\Fonts\arialbd.ttf"),
-        Path(r"C:\Windows\Fonts\calibrib.ttf"),
-        font_file,
-    ]
-    bold_font_file = next((path for path in bold_font_candidates if path is not None and path.is_file()), font_file)
+    font_file, bold_font_file = resolve_template_fonts()
     normalized_images, normalization_report, temp_files = normalize_images_for_powerpoint(images)
     warnings: list[dict[str, Any]] = []
     text_written: dict[str, int] = {}
@@ -467,7 +534,14 @@ def build_pdf(
             target = rect(list(field["rect"]))
             if field["type"] == "text":
                 text = display_value(token, replacements)
-                result = write_text(page, target, text, field, bold_font_file if field.get("bold") else font_file)
+                result = write_text(
+                    page,
+                    target,
+                    text,
+                    field,
+                    bold_font_file if field.get("bold") else font_file,
+                    "pdfgenbold" if field.get("bold") else "pdfgenfont",
+                )
                 text_written[token] = 1 if text else 0
                 for message in result["warnings"]:
                     warnings.append({"field": token, "message": message})
