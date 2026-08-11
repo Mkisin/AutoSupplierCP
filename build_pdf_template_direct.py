@@ -596,6 +596,7 @@ def main() -> None:
     parser.add_argument("company", nargs="?", default="ГОСУДАРЕВ СТАНДАРТ")
     parser.add_argument("--template", default=str(DEFAULT_TEMPLATE), help="PDF template path.")
     parser.add_argument("--output", default="", help="Output PDF path.")
+    parser.add_argument("--report-output", default="", help="Write JSON report to this file instead of stdout.")
     parser.add_argument("--debug-layout", action="store_true", help="Draw field rectangles and names.")
     args = parser.parse_args()
 
@@ -606,7 +607,13 @@ def main() -> None:
         template_path=project_path(args.template),
         debug_layout=args.debug_layout,
     )
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    report_json = json.dumps(report, ensure_ascii=False, indent=2)
+    if args.report_output:
+        report_path = project_path(args.report_output)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(report_json, encoding="utf-8")
+    else:
+        print(report_json)
 
 
 if __name__ == "__main__":

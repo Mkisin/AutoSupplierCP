@@ -737,24 +737,76 @@ def _build_template_pdf(
     if selection:
         env["PRESENTATION_SELECTION_JSON"] = json.dumps(selection, ensure_ascii=False)
     _apply_payload_override_env(env, payload_override)
-    process = subprocess.run(
-        [sys.executable, "-X", "utf8", "build_pdf_template_direct.py", company],
-        cwd=ROOT,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        timeout=180,
-    )
-    if process.returncode != 0:
-        details = (process.stderr or process.stdout or "Template PDF generation failed").strip()
-        raise RuntimeError(details)
-    report = json.loads(process.stdout)
-    created = _safe_root_file(str(report.get("created", "")))
-    if not created.exists() or created.suffix.lower() != ".pdf":
-        raise RuntimeError("Template PDF was not created")
-    return created, report
+    report_path: Path | None = None
+    try:
+        report_file = tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+            dir=ROOT,
+            prefix="pdf_template_report_",
+            suffix=".json",
+        )
+        report_path = Path(report_file.name)
+        report_file.close()
+        process = subprocess.run(
+            [
+                sys.executable,
+                "-X",
+                "utf8",
+                "build_pdf_template_direct.py",
+                company,
+                "--report-output",
+                str(report_path),
+            ],
+            cwd=ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+        )
+        stdout = process.stdout or ""
+        stderr = process.stderr or ""
+        if process.returncode != 0:
+            details = (stderr or stdout or "Template PDF generation failed").strip()
+            raise RuntimeError(details)
+        report_text = report_path.read_text(encoding="utf-8").strip() if report_path.exists() else ""
+        if not report_text:
+            report_text = stdout.strip()
+        if not report_text:
+            details = "; ".join(
+                part
+                for part in (
+                    "Template PDF generation returned no JSON report",
+                    f"stderr={stderr.strip()[:1000]}" if stderr.strip() else "",
+                    f"stdout={stdout.strip()[:1000]}" if stdout.strip() else "",
+                )
+                if part
+            )
+            raise RuntimeError(details)
+        try:
+            report = json.loads(report_text)
+        except json.JSONDecodeError as exc:
+            details = "; ".join(
+                part
+                for part in (
+                    f"Template PDF report is not valid JSON: {exc}",
+                    f"report={report_text[:1000]}",
+                    f"stderr={stderr.strip()[:1000]}" if stderr.strip() else "",
+                    f"stdout={stdout.strip()[:1000]}" if stdout.strip() else "",
+                )
+                if part
+            )
+            raise RuntimeError(details) from exc
+        created = _safe_root_file(str(report.get("created", "")))
+        if not created.exists() or created.suffix.lower() != ".pdf":
+            raise RuntimeError("Template PDF was not created")
+        return created, report
+    finally:
+        if report_path:
+            report_path.unlink(missing_ok=True)
 
 
 def _run_presentation_job(
