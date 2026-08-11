@@ -69,6 +69,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 PRESENTATION_JOBS: dict[str, dict[str, Any]] = {}
 PRESENTATION_JOBS_LOCK = threading.Lock()
 PRESENTATION_JOBS_DIR = ROOT / "data" / "presentation_jobs"
+PRESENTATION_AUDIT_FILE = ROOT / "data" / "presentation_audit.jsonl"
+PRESENTATION_AUDIT_LOCK = threading.Lock()
 AI_SELECTIONS: dict[str, dict[str, Any]] = {}
 AI_SELECTIONS_LOCK = threading.Lock()
 DIRECT_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -77,6 +79,7 @@ DATA_SOURCES_FILE = ROOT / "data_sources.json"
 BITRIX_CONFIG_FILE = ROOT / "bitrix_config.json"
 BITRIX_JOBS: dict[str, dict[str, Any]] = {}
 BITRIX_JOBS_LOCK = threading.Lock()
+APP_STORAGE_MODE = os.environ.get("APP_STORAGE_MODE", "").strip().lower()
 BITRIX_DEAL_FIELD_MAP = {
     "companyName": "COMPANY_ID",
     "contactName": "CONTACT_ID",
@@ -239,6 +242,107 @@ def _get_presentation_job(job_id: str) -> dict[str, Any]:
         if not job:
             raise HTTPException(status_code=404, detail="Задача сборки не найдена")
         return dict(job)
+
+
+def _presentation_audit_item_from_job(
+    job_id: str,
+    job: dict[str, Any],
+    event: str | None = None,
+) -> dict[str, Any]:
+    item = {
+        "event": event or ("PRESENTATION_DONE" if job.get("status") == "done" else "PRESENTATION_ERROR"),
+        "jobId": job_id,
+        "createdAt": job.get("createdAt") or job.get("updatedAt") or datetime.now().isoformat(timespec="seconds"),
+        "updatedAt": job.get("updatedAt"),
+        "companyName": job.get("companyName", ""),
+        "status": job.get("status", ""),
+        "source": job.get("source", ""),
+        "sourceEntityId": job.get("sourceEntityId", ""),
+        "selectionProvider": job.get("selectionProvider", ""),
+        "fileName": job.get("fileName"),
+        "downloadUrl": job.get("downloadUrl"),
+        "pdfFileName": job.get("pdfFileName"),
+        "pdfDownloadUrl": job.get("pdfDownloadUrl"),
+        "templatePdfFileName": job.get("templatePdfFileName"),
+        "templatePdfDownloadUrl": job.get("templatePdfDownloadUrl"),
+        "pdfError": job.get("pdfError"),
+        "templatePdfError": job.get("templatePdfError"),
+        "error": job.get("error"),
+        "message": job.get("message"),
+    }
+    return {key: value for key, value in item.items() if value not in (None, "")}
+
+
+def _write_presentation_audit(job_id: str, event: str) -> None:
+    try:
+        job = _get_presentation_job(job_id)
+    except Exception:
+        job = {"id": job_id, "status": "unknown"}
+    item = _presentation_audit_item_from_job(job_id, job, event)
+    line = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+    log_parts = [
+        event,
+        str(item.get("createdAt") or ""),
+        str(item.get("companyName") or ""),
+        f"job={job_id}",
+        f"source={item.get('source', '')}",
+        f"pptx={item.get('fileName', '')}",
+        f"pdf={item.get('pdfFileName', '')}",
+        f"template_pdf={item.get('templatePdfFileName', '')}",
+    ]
+    if item.get("error"):
+        log_parts.append(f"error={item.get('error')}")
+    print(" | ".join(log_parts), flush=True)
+    try:
+        with PRESENTATION_AUDIT_LOCK:
+            PRESENTATION_AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with PRESENTATION_AUDIT_FILE.open("a", encoding="utf-8") as audit_file:
+                audit_file.write(line + "\n")
+    except Exception as exc:
+        print(f"[audit] presentation audit write failed: {exc}", flush=True)
+
+
+def _read_presentation_audit(limit: int = 100) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if PRESENTATION_AUDIT_FILE.exists():
+        try:
+            lines = PRESENTATION_AUDIT_FILE.read_text(encoding="utf-8").splitlines()
+        except Exception as exc:
+            print(f"[audit] presentation audit read failed: {exc}", flush=True)
+            lines = []
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(item, dict):
+                items.append(item)
+            if len(items) >= limit:
+                break
+
+    seen_job_ids = {str(item.get("jobId") or "") for item in items}
+    if PRESENTATION_JOBS_DIR.exists() and len(items) < limit:
+        job_files = sorted(
+            PRESENTATION_JOBS_DIR.glob("*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for path in job_files:
+            job_id = path.stem
+            if job_id in seen_job_ids:
+                continue
+            job = _load_presentation_job(job_id)
+            if not job or job.get("status") not in {"done", "error"}:
+                continue
+            items.append(_presentation_audit_item_from_job(job_id, job))
+            seen_job_ids.add(job_id)
+            if len(items) >= limit:
+                break
+
+    items.sort(key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""), reverse=True)
+    return items[:limit]
 
 
 def _open_local_file(path: Path) -> str:
@@ -617,20 +721,61 @@ try {
     raise RuntimeError("PDF conversion requires LibreOffice/soffice or Microsoft PowerPoint")
 
 
+def _apply_payload_override_env(env: dict[str, str], form_payload: dict[str, Any] | None = None) -> None:
+    payload_override = _payload_override_from_form(form_payload)
+    if payload_override:
+        env["PAYLOAD_OVERRIDE_JSON"] = json.dumps(payload_override, ensure_ascii=False)
+
+
+def _build_template_pdf(
+    company: str,
+    selection: dict[str, Any] | None = None,
+    payload_override: dict[str, Any] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    if selection:
+        env["PRESENTATION_SELECTION_JSON"] = json.dumps(selection, ensure_ascii=False)
+    _apply_payload_override_env(env, payload_override)
+    process = subprocess.run(
+        [sys.executable, "-X", "utf8", "build_pdf_template_direct.py", company],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        timeout=180,
+    )
+    if process.returncode != 0:
+        details = (process.stderr or process.stdout or "Template PDF generation failed").strip()
+        raise RuntimeError(details)
+    report = json.loads(process.stdout)
+    created = _safe_root_file(str(report.get("created", "")))
+    if not created.exists() or created.suffix.lower() != ".pdf":
+        raise RuntimeError("Template PDF was not created")
+    return created, report
+
+
 def _run_presentation_job(
     job_id: str,
     company: str,
     selection: dict[str, Any] | None = None,
     make_pdf: bool = False,
     require_pdf: bool = False,
+    payload_override: dict[str, Any] | None = None,
+    source: str = "manual",
+    source_entity_id: str = "",
 ) -> None:
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     if selection:
         env["PRESENTATION_SELECTION_JSON"] = json.dumps(selection, ensure_ascii=False)
+    _apply_payload_override_env(env, payload_override)
     command = [sys.executable, "-X", "utf8", "build_presentation_direct_new.py", company]
     stdout_path: Path | None = None
     stderr_path: Path | None = None
+    _set_presentation_job(job_id, source=source, sourceEntityId=source_entity_id)
 
     try:
         _set_presentation_job(job_id, status="running", progress=12, message="Готовлю данные компании")
@@ -692,7 +837,6 @@ def _run_presentation_job(
         if not created.exists():
             raise RuntimeError("Презентация не была создана")
 
-        open_status = _open_local_file(created)
         _set_presentation_job(
             job_id,
             status="running",
@@ -700,7 +844,6 @@ def _run_presentation_job(
             message="PPTX готов, начинаю конвертацию в PDF" if make_pdf else "Презентация готова",
             fileName=created.name,
             downloadUrl=f"/api/presentations/{urllib.parse.quote(created.name)}",
-            openStatus=open_status,
             report=report,
         )
 
@@ -715,11 +858,21 @@ def _run_presentation_job(
                 if require_pdf:
                     raise
 
+        template_pdf_path: Path | None = None
+        template_pdf_error: str | None = None
+        template_pdf_report: dict[str, Any] | None = None
+        _set_presentation_job(job_id, status="running", progress=98, message="Собираю второй PDF из PDF-шаблона")
+        try:
+            template_pdf_path, template_pdf_report = _build_template_pdf(company, selection, payload_override)
+        except Exception as exc:
+            template_pdf_error = str(exc) or "Template PDF generation failed"
+
+        open_status = _open_local_file(created)
         _set_presentation_job(
             job_id,
             status="done",
             progress=100,
-            message="Презентация готова",
+            message="Презентации готовы",
             fileName=created.name,
             downloadUrl=f"/api/presentations/{urllib.parse.quote(created.name)}",
             pdfFileName=pdf_path.name if pdf_path is not None else None,
@@ -729,9 +882,19 @@ def _run_presentation_job(
                 else None
             ),
             pdfError=pdf_error,
+            templatePdfFileName=template_pdf_path.name if template_pdf_path is not None else None,
+            templatePdfDownloadUrl=(
+                f"/api/presentations/{urllib.parse.quote(template_pdf_path.name)}"
+                if template_pdf_path is not None
+                else None
+            ),
+            templatePdfError=template_pdf_error,
             openStatus=open_status,
-            report=report,
+            source=source,
+            sourceEntityId=source_entity_id,
+            report={**report, "template_pdf": template_pdf_report},
         )
+        _write_presentation_audit(job_id, "PRESENTATION_DONE")
     except Exception as exc:
         _set_presentation_job(
             job_id,
@@ -740,6 +903,7 @@ def _run_presentation_job(
             message=str(exc) or "Не удалось сформировать презентацию",
             error=str(exc) or "Не удалось сформировать презентацию",
         )
+        _write_presentation_audit(job_id, "PRESENTATION_ERROR")
     finally:
         if stdout_path:
             stdout_path.unlink(missing_ok=True)
@@ -2078,7 +2242,11 @@ def _request_ai_choice(
             },
         ) from exc
     try:
-        content = response_payload["choices"][0]["message"].get("content") or ""
+        choice = response_payload["choices"][0]
+        message = choice.get("message") if isinstance(choice, dict) else {}
+        content = _ai_message_text(message if isinstance(message, dict) else choice)
+        if not content and isinstance(choice, dict):
+            content = _ai_message_text(choice)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -2101,7 +2269,7 @@ def _request_ai_choice(
         "response": response_payload,
     }
     try:
-        return _extract_json_object(content), raw_response
+        return _extract_ai_selection_payload(content, response_payload), raw_response
     except Exception as exc:
         raw_response["parse_error"] = str(exc)
         raise HTTPException(
@@ -2111,6 +2279,33 @@ def _request_ai_choice(
                 "rawResponse": raw_response,
             },
         ) from exc
+
+
+def _ai_message_text(message: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("content", "reasoning_content", "text", "output_text"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    parts.append(item.strip())
+                elif isinstance(item, dict):
+                    text = item.get("text") or item.get("content") or item.get("json") or item.get("arguments")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function")
+            if isinstance(function, dict):
+                arguments = function.get("arguments")
+                if isinstance(arguments, str) and arguments.strip():
+                    parts.append(arguments.strip())
+    return "\n".join(parts)
 
 
 def _ai_request_body(settings: dict[str, str], report: dict[str, Any], selection: dict[str, Any]) -> dict[str, Any]:
@@ -2133,6 +2328,8 @@ def _ai_request_body(settings: dict[str, str], report: dict[str, Any], selection
     }
     if max_tokens > 0:
         body["max_tokens"] = max_tokens
+    if settings["provider"] == "deepseek":
+        body["thinking"] = {"type": "disabled"}
     return body
 
 
@@ -2154,19 +2351,113 @@ def _ai_request_preview(provider: str, report: dict[str, Any], selection: dict[s
 
 def _extract_json_object(text: str) -> dict[str, Any]:
     text = text.strip()
+    if not text:
+        raise ValueError("AI response content is empty")
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"^```(?:json|JSON)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
-            raise
-        payload = json.loads(match.group(0))
+        json_text = _first_balanced_json_object(text)
+        if not json_text:
+            preview = text[:300].replace("\n", " ")
+            raise ValueError(f"AI response does not contain a JSON object: {preview}") from None
+        payload = json.loads(json_text)
     if not isinstance(payload, dict):
         raise ValueError("AI response must be a JSON object")
     return payload
+
+
+def _extract_ai_selection_payload(content: str, response_payload: Any) -> dict[str, Any]:
+    candidates = [content, *_collect_response_strings(response_payload)]
+    seen: set[str] = set()
+    unique_candidates: list[str] = []
+    for candidate in candidates:
+        normalized = candidate.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_candidates.append(normalized)
+
+    prioritized = sorted(
+        unique_candidates,
+        key=lambda item: ("photo_ids" not in item and "review_ids" not in item, len(item)),
+    )
+    errors: list[str] = []
+    for candidate in prioritized:
+        try:
+            payload = _extract_json_object(candidate)
+        except Exception as exc:
+            errors.append(str(exc))
+            continue
+        if _looks_like_ai_selection_payload(payload):
+            return payload
+        errors.append("JSON object found, but it is not an AI selection payload")
+
+    preview = (content or (unique_candidates[0] if unique_candidates else ""))[:300].replace("\n", " ")
+    if preview:
+        raise ValueError(f"AI response does not contain a selection JSON object: {preview}")
+    raise ValueError("AI response content is empty")
+
+
+def _collect_response_strings(value: Any) -> list[str]:
+    result: list[str] = []
+    if isinstance(value, str):
+        if value.strip():
+            result.append(value.strip())
+    elif isinstance(value, list):
+        for item in value:
+            result.extend(_collect_response_strings(item))
+    elif isinstance(value, dict):
+        preferred_keys = (
+            "arguments",
+            "content",
+            "text",
+            "output_text",
+            "json",
+            "reasoning_content",
+            "message",
+        )
+        for key in preferred_keys:
+            if key in value:
+                result.extend(_collect_response_strings(value[key]))
+        for key, item in value.items():
+            if key not in preferred_keys:
+                result.extend(_collect_response_strings(item))
+    return result
+
+
+def _looks_like_ai_selection_payload(payload: dict[str, Any]) -> bool:
+    return isinstance(payload.get("photo_ids"), list) or isinstance(payload.get("review_ids"), list)
+
+
+def _first_balanced_json_object(text: str) -> str:
+    start = text.find("{")
+    if start < 0:
+        return ""
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return ""
 
 
 def _merge_ai_selection(default_selection: dict[str, Any], ai_payload: dict[str, Any]) -> dict[str, Any]:
@@ -2550,6 +2841,8 @@ def build_presentation(payload: dict[str, Any]) -> dict[str, Any]:
         companyName=company,
         selectionId=selection_id,
         selectionProvider=selection_item.get("provider", ""),
+        source="manual",
+        createdAt=datetime.now().isoformat(timespec="seconds"),
         status="queued",
         progress=5,
         message="Задача поставлена в очередь",
@@ -2567,6 +2860,12 @@ def build_presentation(payload: dict[str, Any]) -> dict[str, Any]:
 @app.get("/api/presentations/jobs/{job_id}")
 def presentation_job(job_id: str) -> dict[str, Any]:
     return _get_presentation_job(job_id)
+
+
+@app.get("/api/presentations/history")
+def presentation_history(limit: int = 100) -> dict[str, Any]:
+    limit = max(1, min(500, limit))
+    return {"items": _read_presentation_audit(limit)}
 
 
 @app.get("/api/presentations/{filename}")
@@ -2863,6 +3162,14 @@ def _default_ai_provider() -> str:
     return "rules"
 
 
+def _storage_mode() -> str:
+    if APP_STORAGE_MODE in {"excel", "memory"}:
+        return APP_STORAGE_MODE
+    if os.environ.get("RENDER", "").strip().lower() in {"1", "true", "yes"}:
+        return "memory"
+    return "excel"
+
+
 def _set_bitrix_job(job_id: str, **values: Any) -> None:
     with BITRIX_JOBS_LOCK:
         job = BITRIX_JOBS.setdefault(job_id, {})
@@ -2884,16 +3191,24 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
         if not company:
             raise RuntimeError("Не удалось получить название компании из карточки Битрикс24")
 
-        _set_bitrix_job(job_id, progress=15, message=f"Сохраняю карточку: {company}")
+        storage_mode = _storage_mode()
+        _set_bitrix_job(
+            job_id,
+            progress=15,
+            message=f"Сохраняю карточку: {company}" if storage_mode == "excel" else f"Данные карточки получены: {company}",
+            storageMode=storage_mode,
+            cardData=card_data,
+        )
 
         for fallback_field, fallback_value in (("companyType", "Производитель"),):
             if not card_data.get(fallback_field):
                 card_data[fallback_field] = fallback_value
 
-        try:
-            _save_card_row(card_data, None, None)
-        except Exception as exc:
-            print(f"[bitrix] предупреждение: не удалось сохранить карточку: {exc}", flush=True)
+        if storage_mode == "excel":
+            try:
+                _save_card_row(card_data, None, None)
+            except Exception as exc:
+                print(f"[bitrix] предупреждение: не удалось сохранить карточку: {exc}", flush=True)
 
         _set_bitrix_job(job_id, progress=25, message="Подготавливаю материалы для ИИ")
 
@@ -2920,11 +3235,23 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
             pptx_job_id,
             id=pptx_job_id,
             companyName=company,
+            source=f"bitrix_{entity_type}",
+            sourceEntityId=entity_id,
+            createdAt=datetime.now().isoformat(timespec="seconds"),
             status="queued",
             progress=5,
             message="Задача от Битрикс24",
         )
-        _run_presentation_job(pptx_job_id, company, final_selection, make_pdf=True, require_pdf=True)
+        _run_presentation_job(
+            pptx_job_id,
+            company,
+            final_selection,
+            make_pdf=True,
+            require_pdf=True,
+            payload_override=card_data,
+            source=f"bitrix_{entity_type}",
+            source_entity_id=entity_id,
+        )
         pptx_job = _get_presentation_job(pptx_job_id)
 
         if pptx_job.get("status") != "done":
@@ -2955,6 +3282,8 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
             downloadUrl=pptx_job.get("downloadUrl"),
             pdfFileName=pdf_file_name,
             pdfDownloadUrl=pptx_job.get("pdfDownloadUrl"),
+            templatePdfFileName=pptx_job.get("templatePdfFileName"),
+            templatePdfDownloadUrl=pptx_job.get("templatePdfDownloadUrl"),
             selectedPhotos=_selected_photo_summary(final_selection),
         )
 
