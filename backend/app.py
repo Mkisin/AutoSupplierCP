@@ -818,6 +818,7 @@ def _run_presentation_job(
     payload_override: dict[str, Any] | None = None,
     source: str = "manual",
     source_entity_id: str = "",
+    write_audit: bool = True,
 ) -> None:
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
@@ -946,7 +947,8 @@ def _run_presentation_job(
             sourceEntityId=source_entity_id,
             report={**report, "template_pdf": template_pdf_report},
         )
-        _write_presentation_audit(job_id, "PRESENTATION_DONE")
+        if write_audit:
+            _write_presentation_audit(job_id, "PRESENTATION_DONE")
     except Exception as exc:
         _set_presentation_job(
             job_id,
@@ -955,7 +957,8 @@ def _run_presentation_job(
             message=str(exc) or "Не удалось сформировать презентацию",
             error=str(exc) or "Не удалось сформировать презентацию",
         )
-        _write_presentation_audit(job_id, "PRESENTATION_ERROR")
+        if write_audit:
+            _write_presentation_audit(job_id, "PRESENTATION_ERROR")
     finally:
         if stdout_path:
             stdout_path.unlink(missing_ok=True)
@@ -1790,6 +1793,7 @@ def _dadata_company_from_suggestion(suggestion: dict[str, Any]) -> dict[str, str
         "dadataManager": _manager_name(data),
         "dadataUpdatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    return selection
 
 
 def _fetch_dadata_company(inn: str) -> dict[str, str]:
@@ -2730,6 +2734,8 @@ def site_inn_search(website: str, selectedInn: str = "") -> dict[str, Any]:
 def dadata_company(payload: dict[str, Any]) -> dict[str, Any]:
     inn = _digits(str(payload.get("inn", "")))
     details = _fetch_dadata_company(inn)
+    if not isinstance(details, dict):
+        raise HTTPException(status_code=502, detail="DaData вернула некорректный ответ")
     row_number_raw = str(payload.get("rowNumber", "")).strip()
     if row_number_raw.isdigit():
         _update_card_dadata(int(row_number_raw), details)
@@ -3230,6 +3236,7 @@ def _set_bitrix_job(job_id: str, **values: Any) -> None:
 
 
 def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
+    pptx_job_id = ""
     try:
         _set_bitrix_job(job_id, status="running", progress=5, message="Загружаю данные карточки из Битрикс24")
 
@@ -3287,6 +3294,7 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
             pptx_job_id,
             id=pptx_job_id,
             companyName=company,
+            selectionProvider=ai_provider,
             source=f"bitrix_{entity_type}",
             sourceEntityId=entity_id,
             createdAt=datetime.now().isoformat(timespec="seconds"),
@@ -3303,6 +3311,7 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
             payload_override=card_data,
             source=f"bitrix_{entity_type}",
             source_entity_id=entity_id,
+            write_audit=False,
         )
         pptx_job = _get_presentation_job(pptx_job_id)
 
@@ -3325,6 +3334,15 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
         if entity_type == "deal":
             _bitrix_move_deal_stage(webhook_url, entity_id, BITRIX_AFTER_PRESENTATION_STAGE_ID)
 
+        _set_presentation_job(
+            pptx_job_id,
+            message="Презентация готова и загружена в Битрикс24",
+            source=f"bitrix_{entity_type}",
+            sourceEntityId=entity_id,
+            selectionProvider=ai_provider,
+        )
+        _write_presentation_audit(pptx_job_id, "PRESENTATION_DONE")
+
         _set_bitrix_job(
             job_id,
             status="done",
@@ -3340,6 +3358,20 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
         )
 
     except Exception as exc:
+        if pptx_job_id:
+            try:
+                _set_presentation_job(
+                    pptx_job_id,
+                    status="error",
+                    progress=100,
+                    message=str(exc),
+                    error=str(exc),
+                    source=f"bitrix_{entity_type}",
+                    sourceEntityId=entity_id,
+                )
+                _write_presentation_audit(pptx_job_id, "PRESENTATION_ERROR")
+            except Exception as audit_exc:
+                print(f"[bitrix] presentation audit failed: {audit_exc}", flush=True)
         _set_bitrix_job(job_id, status="error", progress=0, message=str(exc), error=str(exc))
         print(f"[bitrix] ошибка pipeline: {exc}", flush=True)
 
