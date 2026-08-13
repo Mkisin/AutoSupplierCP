@@ -3235,6 +3235,112 @@ def _set_bitrix_job(job_id: str, **values: Any) -> None:
         job["updatedAt"] = datetime.now().isoformat(timespec="seconds")
 
 
+BAD_CARD_VALUE_MARKERS = {
+    "",
+    "-",
+    "—",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "нет",
+    "нет данных",
+    "не указано",
+    "не указан",
+    "не указана",
+    "неизвестно",
+    "ничего не подходит",
+    "не подходит",
+}
+
+BITRIX_BLOCKING_QUALITY_FIELDS = {
+    "companyName": "Название компании",
+    "productCategory": "Категория товара",
+}
+
+BITRIX_OPTIONAL_QUALITY_FIELDS = {
+    "contactName": "ФИО контакта",
+    "contactPosition": "Должность контакта",
+    "preferredNetworks": "Предпочтительные сети",
+    "priceCategory": "Ценовая категория",
+    "city": "Город",
+    "country": "Страна",
+    "website": "Сайт",
+    "inn": "ИНН",
+    "companyType": "Тип компании",
+    "productName": "Название товара",
+    "productDescription": "Краткое описание продукции",
+}
+
+
+def _normalized_quality_value(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def _is_bad_card_value(value: Any) -> bool:
+    normalized = _normalized_quality_value(value)
+    if normalized in BAD_CARD_VALUE_MARKERS:
+        return True
+    return any(marker and marker in normalized for marker in ("ничего не подходит", "не подходит"))
+
+
+def _assess_bitrix_card_quality(card_data: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(card_data)
+    blocking: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+
+    for field, label in BITRIX_BLOCKING_QUALITY_FIELDS.items():
+        value = cleaned.get(field, "")
+        if _is_bad_card_value(value):
+            blocking.append(
+                {
+                    "field": field,
+                    "label": label,
+                    "value": str(value or ""),
+                    "reason": "Некорректное значение обязательного поля",
+                }
+            )
+
+    for field, label in BITRIX_OPTIONAL_QUALITY_FIELDS.items():
+        if field in BITRIX_BLOCKING_QUALITY_FIELDS:
+            continue
+        if field not in cleaned:
+            continue
+        value = cleaned.get(field, "")
+        if not str(value or "").strip():
+            continue
+        if _is_bad_card_value(value):
+            cleaned[field] = ""
+            warnings.append(
+                {
+                    "field": field,
+                    "label": label,
+                    "value": str(value or ""),
+                    "action": "Поле очищено, презентация продолжит сборку без него",
+                }
+            )
+
+    return {
+        "can_build": not blocking,
+        "blocking": blocking,
+        "warnings": warnings,
+        "cardData": cleaned,
+    }
+
+
+def _format_card_quality_error(quality: dict[str, Any]) -> str:
+    blocking = quality.get("blocking") if isinstance(quality.get("blocking"), list) else []
+    parts = []
+    for item in blocking:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or item.get("field") or "").strip()
+        value = str(item.get("value") or "").strip()
+        parts.append(f"{label}: {value}" if value else label)
+    details = "; ".join(parts) if parts else "некорректные обязательные поля"
+    return f"Формирование презентации остановлено: {details}"
+
+
 def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
     pptx_job_id = ""
     try:
@@ -3246,6 +3352,37 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
         file_field: str = field_map.get("presentationFileField", "")
 
         card_data = _bitrix_get_card_data(entity_type, entity_id, webhook_url, field_map)
+        data_quality = _assess_bitrix_card_quality(card_data)
+        if data_quality.get("warnings"):
+            print(
+                "[bitrix][data-quality] optional fields cleaned: "
+                + json.dumps(
+                    {
+                        "jobId": job_id,
+                        "entityType": entity_type,
+                        "entityId": entity_id,
+                        "warnings": data_quality.get("warnings"),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        if not data_quality.get("can_build"):
+            print(
+                "[bitrix][data-quality] presentation stopped: "
+                + json.dumps(
+                    {
+                        "jobId": job_id,
+                        "entityType": entity_type,
+                        "entityId": entity_id,
+                        "blocking": data_quality.get("blocking"),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            raise RuntimeError(_format_card_quality_error(data_quality))
+        card_data = data_quality["cardData"]
         company = str(card_data.get("companyName") or "").strip()
         if not company:
             raise RuntimeError("Не удалось получить название компании из карточки Битрикс24")
@@ -3257,6 +3394,7 @@ def _run_bitrix_pipeline(job_id: str, entity_type: str, entity_id: str) -> None:
             message=f"Сохраняю карточку: {company}" if storage_mode == "excel" else f"Данные карточки получены: {company}",
             storageMode=storage_mode,
             cardData=card_data,
+            dataQuality=data_quality,
         )
 
         for fallback_field, fallback_value in (("companyType", "Производитель"),):
